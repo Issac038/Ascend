@@ -1,0 +1,24 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Logs
+*.log
+*.log.*
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+
+# Local tooling state (preview logs etc.) — keep the run doc
+.freebuff/*
+!.freebuff/run.md

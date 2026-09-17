@@ -1,0 +1,3 @@
+# SPA fallback for Netlify/hosting platforms that read _redirects:
+# every route is served by the React app; assets are matched first.
+/*    /index.html   200
