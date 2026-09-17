@@ -212,12 +212,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
     color: var(--text);
 }
 
-@media (max-width: 900px) {
-    .mobile-topbar:has(.more-wrap.open) {
-        margin-bottom: 236px;
-    }
-}
-
 /* ---------- bottom nav (mobile) ---------- */
 
 .bottom-nav {
@@ -1134,6 +1128,10 @@ button, a, .btn, .icon-btn, .bottom-nav-item, .ob-choice {
         width: 100%;
         max-height: 88vh;
         max-height: 88dvh;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        overflow: hidden;
         border-radius: 18px 18px 0 0;
         border-left: none;
         border-right: none;
@@ -1142,12 +1140,22 @@ button, a, .btn, .icon-btn, .bottom-nav-item, .ob-choice {
         animation: sheetIn 0.28s cubic-bezier(0.22, 1, 0.36, 1);
     }
 
+    .modal-head {
+        flex-shrink: 0;
+    }
+
+    .modal-body {
+        min-width: 0;
+        min-height: 0;
+        overflow-y: auto;
+        padding-bottom: 8px;
+    }
+
     .modal-actions {
-        position: sticky;
-        bottom: 0;
-        margin: 18px -18px calc(-24px - env(safe-area-inset-bottom));
-        padding: 14px 18px calc(24px + env(safe-area-inset-bottom));
-        background: linear-gradient(to top, #141414 78%, transparent);
+        flex-shrink: 0;
+        margin: 18px 0 0;
+        padding: 14px 0 calc(24px + env(safe-area-inset-bottom));
+        background: #141414;
     }
 
     .modal-actions .btn { flex: 1; min-height: 46px; }

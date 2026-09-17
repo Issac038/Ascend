@@ -54,7 +54,7 @@ export function Modal({ open, onClose, title, subtitle, children, actions, large
                         <X size={18} />
                     </button>
                 </div>
-                {children}
+                <div className="modal-body">{children}</div>
                 {actions && <div className="modal-actions">{actions}</div>}
             </div>
         </div>
