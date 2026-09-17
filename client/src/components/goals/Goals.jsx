@@ -232,7 +232,7 @@ export default function Goals() {
             >
                 <div className="grid" style={{ gap: 16 }}>
                     <Field label="Goal title">
-                        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="BUILD A STRONGER PHYSIQUE" style={{ textTransform: "uppercase", fontWeight: 700 }} autoFocus />
+                        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="BUILD A STRONGER PHYSIQUE" style={{ fontWeight: 700 }} autoFocus />
                     </Field>
                     <Field label="Why does this matter? (optional)">
                         <textarea className="textarea" style={{ minHeight: 70 }} value={description} onChange={(e) => setDescription(e.target.value)} />

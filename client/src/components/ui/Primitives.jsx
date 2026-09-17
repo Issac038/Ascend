@@ -77,9 +77,9 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, message, confir
                 </>
             }
         >
-            <div className="row" style={{ alignItems: "flex-start" }}>
+            <div className="confirm-dialog-body">
                 {danger && <AlertTriangle size={22} style={{ color: "var(--danger)", flexShrink: 0, marginTop: 2 }} />}
-                <p style={{ color: "var(--text-2)", fontSize: 14 }}>{message}</p>
+                <p className="confirm-dialog-message">{message}</p>
             </div>
         </Modal>
     );

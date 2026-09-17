@@ -184,12 +184,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
     top: calc(100% + 10px);
     right: 0;
     min-width: 190px;
-    background: var(--surface-2);
+    max-width: calc(100vw - 32px);
+    background: var(--card);
     border: 1px solid var(--line);
     border-radius: 12px;
     padding: 6px;
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
-    z-index: 60;
+    z-index: 70;
 }
 
 .more-menu a.more-menu-link {
@@ -207,8 +208,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .more-menu a.more-menu-link:hover,
 .more-menu a.more-menu-link.active {
-    background: var(--surface-3);
+    background: var(--elev);
     color: var(--text);
+}
+
+@media (max-width: 900px) {
+    .mobile-topbar:has(.more-wrap.open) {
+        margin-bottom: 236px;
+    }
 }
 
 /* ---------- bottom nav (mobile) ---------- */
@@ -596,6 +603,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
     margin-top: 22px;
 }
 
+.confirm-dialog-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.confirm-dialog-message {
+    min-width: 0;
+    color: var(--text-2);
+    font-size: 14px;
+    overflow-wrap: anywhere;
+}
+
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modalIn { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
 
@@ -855,6 +875,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .journal-card .j-prompt { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 .journal-card .j-prompt .p-label { font-size: 10px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-4); margin-bottom: 3px; }
 .journal-card .j-prompt p { font-size: 13px; color: var(--text-2); }
+
+.journal-editor .field > label {
+    letter-spacing: normal;
+    text-transform: none;
+}
 
 .scale-row { display: flex; gap: 6px; }
 .scale-btn {

@@ -59,7 +59,7 @@ function MoreMenu() {
     }, [open]);
 
     return (
-        <div className="more-wrap" ref={ref}>
+        <div className={`more-wrap${open ? " open" : ""}`} ref={ref}>
             <button
                 className="icon-btn"
                 aria-label="More pages"

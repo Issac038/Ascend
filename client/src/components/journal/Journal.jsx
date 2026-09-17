@@ -185,7 +185,7 @@ export default function Journal() {
                     </>
                 }
             >
-                <div className="grid" style={{ gap: 18 }}>
+                <div className="journal-editor grid" style={{ gap: 18 }}>
                     <Field label="Free writing">
                         <textarea className="textarea" value={form.text} onChange={(ev) => setForm({ ...form, text: ev.target.value })} placeholder="How was your day, really?" style={{ minHeight: 90 }} />
                     </Field>
