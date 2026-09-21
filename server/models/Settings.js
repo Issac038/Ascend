@@ -23,6 +23,13 @@ const settingsSchema = new mongoose.Schema(
             largerText: { type: Boolean, default: false }
         },
 
+        nutrition: {
+            // Optional, user-defined daily calorie tracking target (kcal).
+            // Deliberately NOT auto-prescribed from age/weight/sex — it is a
+            // personal tracking goal, not medical advice.
+            dailyCalorieTarget: { type: Number, default: null, min: 800, max: 10000 }
+        },
+
         privacy: {
             showStreaks: { type: Boolean, default: true }
         },

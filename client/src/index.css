@@ -1207,4 +1207,286 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
     transition-duration: 0.01ms !important;
 }
 body.high-contrast { --line: #4a4a4a; --line-soft: #3a3a3a; --text-3: #9a9a9a; --text-4: #6a6a6a; }
+
+/* ================================================================
+   NUTRITION
+   Reuses the existing design tokens only — no new colors.
+   ================================================================ */
+
+.nutrition-notice {
+    font-size: 13.5px;
+    color: var(--text-2);
+    border-left: 2px solid var(--line);
+}
+
+/* date navigation */
+.nutrition-datebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+.nutrition-datebtn {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+}
+.nutrition-datetitle {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-weight: 900;
+    letter-spacing: 0.18em;
+    font-size: 12.5px;
+    text-align: center;
+    padding: 10px 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: inherit;
+}
+@media (max-width: 420px) {
+    .nutrition-datetitle { letter-spacing: 0.12em; font-size: 11.5px; }
+}
+.nutrition-datetitle.is-today { color: var(--text); }
+
+/* summary card */
+.nutrition-summary { padding: 18px 18px 14px; }
+.nutrition-kcal {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.nutrition-kcal-big {
+    font-size: 38px;
+    font-weight: 900;
+    line-height: 1.05;
+    margin-top: 4px;
+}
+.nutrition-kcal-big span { font-size: 15px; font-weight: 700; color: var(--text-3); }
+.nutrition-target { text-align: right; font-size: 12.5px; color: var(--text-2); min-width: 150px; }
+.nutrition-target .over { color: var(--danger, #e5484d); }
+.nutrition-kcal-goal { font-weight: 800; color: var(--text); }
+.nutrition-macros {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-soft);
+}
+.nutrition-macro {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    color: var(--text-2);
+    min-width: 0;
+}
+.nutrition-macro .mono-num { font-weight: 800; color: var(--text); margin-left: auto; }
+.nutrition-macro-icon { display: grid; place-items: center; color: var(--text-3); flex-shrink: 0; }
+.nutrition-macro-label { white-space: nowrap; }
+.nutrition-macro-unit { color: var(--text-3); font-weight: 700; margin-left: 2px; }
+.nutrition-disclaimer { margin-top: 12px; }
+
+/* meal sections */
+.nutrition-meal-section { padding: 14px 16px; }
+.nutrition-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+.nutrition-section-kcal { font-size: 13px; color: var(--text-2); font-weight: 800; }
+.nutrition-meal-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--elev);
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    padding: 12px 14px;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    font-family: inherit;
+    min-height: 48px;
+}
+.nutrition-meal-info { min-width: 0; display: grid; gap: 3px; }
+.nutrition-meal-name {
+    font-weight: 700;
+    font-size: 14px;
+    overflow-wrap: anywhere; /* long food names wrap, never overflow */
+}
+.nutrition-meal-kcal { font-weight: 800; font-size: 14px; white-space: nowrap; }
+.nutrition-meal-kcal span { color: var(--text-3); font-weight: 700; font-size: 12px; }
+
+/* per-entry delete: row + separate trash button (own tap target, never
+   triggers the row's edit action) */
+.nutrition-meal-row-wrap {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    min-width: 0; /* long food names wrap instead of overflowing */
+}
+.nutrition-meal-row-wrap .nutrition-meal-row { flex: 1; min-width: 0; }
+.nutrition-meal-delete {
+    flex-shrink: 0;
+    width: 40px;
+    min-height: 48px; /* comfortable touch target, matches row height */
+    display: grid;
+    place-items: center;
+    background: var(--elev);
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    color: var(--text-3);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.nutrition-meal-delete:hover { color: var(--danger); border-color: #5a3232; background: #1d1212; }
+.nutrition-meal-delete:active { background: #241515; }
+.nutrition-meal-delete:disabled { opacity: 0.45; cursor: default; }
+
+/* add-food modal internals */
+.nutrition-mealtype-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+.nutrition-mealtype-btn {
+    flex: 1;
+    min-height: 40px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--text-2);
+    border-radius: 10px;
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+}
+.nutrition-mealtype-btn.active {
+    background: var(--elev);
+    color: var(--text);
+    border-color: var(--line);
+}
+
+.nutrition-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--line-soft);
+    padding-bottom: 10px;
+}
+.nutrition-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 42px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--text-2);
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+}
+.nutrition-tab.active { background: var(--elev); color: var(--text); }
+
+.nutrition-status {
+    color: var(--text-2);
+    font-size: 13.5px;
+    padding: 14px 2px;
+}
+
+.nutrition-results { display: grid; gap: 8px; }
+.nutrition-result {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--elev);
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    padding: 12px 14px;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    font-family: inherit;
+    min-height: 56px;
+}
+.nutrition-result:disabled { opacity: 0.6; cursor: wait; }
+.nutrition-result-info { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.nutrition-result-name { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
+.nutrition-result .hint { overflow-wrap: anywhere; }
+.nutrition-result-kcal { font-weight: 800; font-size: 13.5px; white-space: nowrap; }
+.nutrition-result-kcal span { color: var(--text-3); font-weight: 700; }
+.nutrition-result-chevron { color: var(--text-4); flex-shrink: 0; }
+
+.nutrition-unavailable {
+    display: grid;
+    place-items: center;
+    gap: 8px;
+    text-align: center;
+    padding: 26px 10px;
+    color: var(--text-2);
+    font-size: 13.5px;
+}
+.nutrition-unavailable p { max-width: 340px; }
+
+/* photo tab */
+.nutrition-photo-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+/* barcode tab */
+.nutrition-barcode-tab { padding-top: 2px; }
+.nutrition-manual-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+}
+@media (max-width: 400px) {
+    .nutrition-manual-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* serving selector */
+.nutrition-serving-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+@media (max-width: 640px) {
+    .nutrition-serving-row { grid-template-columns: 1fr 1fr; }
+}
+
+.nutrition-preview { margin-top: 6px; padding: 14px; }
+.nutrition-preview-main {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+.nutrition-preview-kcal { font-size: 22px; font-weight: 900; }
+
+/* meal editor */
+.nutrition-edit-food { padding: 12px 14px; }
+.nutrition-edit-food-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 2px;
+}
 body.larger-text { font-size: 16px; }

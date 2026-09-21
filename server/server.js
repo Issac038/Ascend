@@ -10,6 +10,7 @@ require("dotenv").config();
 const authRoutes = require("./routes/auth");
 const dataRoutes = require("./routes/data");
 const insightRoutes = require("./routes/insights");
+const nutritionRoutes = require("./routes/nutrition");
 
 const app = express();
 
@@ -66,6 +67,16 @@ const apiLimiter = rateLimit({
     message: { success: false, message: "Too many requests. Slow down." }
 });
 
+// Rate limiting for the external nutrition provider routes — each call
+// fans out to FatSecret, so keep it tighter than the general API limit.
+const nutritionLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 30,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { success: false, message: "Too many nutrition lookups. Slow down a little." }
+});
+
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
 
@@ -73,10 +84,15 @@ app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/forgot-password", authLimiter);
 app.use("/api/auth/reset-password", authLimiter);
+app.use("/api/nutrition/search", nutritionLimiter);
+app.use("/api/nutrition/food", nutritionLimiter);
+app.use("/api/nutrition/barcode", nutritionLimiter);
+app.use("/api/nutrition/analyze-photo", nutritionLimiter);
 app.use("/api", apiLimiter);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/data", dataRoutes);
+app.use("/api/nutrition", nutritionRoutes);
 app.use("/api", insightRoutes);
 
 // Health check: safe, no config exposure, DB ping included (no credentials).

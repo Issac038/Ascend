@@ -180,6 +180,43 @@ export default function SettingsPage() {
                 </div>
             </div>
 
+            {/* nutrition */}
+            <div className="card settings-group">
+                <div className="chart-title" style={{ marginBottom: 4 }}><span>NUTRITION</span></div>
+                <div className="settings-row">
+                    <div className="sr-info">
+                        <h4>Daily calorie target</h4>
+                        <p>Your own tracking goal (800–10,000 kcal) shown on the Nutrition page. Not auto-calculated, not medical advice.</p>
+                    </div>
+                    <div className="row" style={{ gap: 12 }}>
+                        <input
+                            className="input"
+                            type="number"
+                            inputMode="numeric"
+                            min="800"
+                            max="10000"
+                            style={{ width: 110 }}
+                            placeholder="kcal"
+                            defaultValue={settings.nutrition?.dailyCalorieTarget || ""}
+                            key={settings.nutrition?.dailyCalorieTarget ?? "empty"}
+                            onBlur={(e) => {
+                                const raw = e.target.value.trim();
+                                const next = raw === "" ? null : Number(raw);
+                                const current = settings.nutrition?.dailyCalorieTarget ?? null;
+                                if (next === current) return;
+                                if (next === null || (Number.isFinite(next) && next >= 800 && next <= 10000)) {
+                                    update("nutrition", { dailyCalorieTarget: next });
+                                } else {
+                                    toast("Target must be between 800 and 10,000 kcal");
+                                    e.target.value = current || "";
+                                }
+                            }}
+                        />
+                        <span className="hint">kcal</span>
+                    </div>
+                </div>
+            </div>
+
             {/* privacy */}
             <div className="card settings-group">
                 <div className="chart-title" style={{ marginBottom: 4 }}><span>PRIVACY</span></div>

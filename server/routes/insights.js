@@ -21,6 +21,7 @@ const JournalEntry = require("../models/JournalEntry");
 const ProgressSnapshot = require("../models/ProgressSnapshot");
 const UserAchievement = require("../models/Achievement");
 const Notification = require("../models/Notification");
+const Meal = require("../models/Meal");
 
 const router = express.Router();
 
@@ -520,6 +521,21 @@ router.patch("/settings", auth, async (req, res) => {
             settings.notifications.dailyReminderTime = String(req.body.notifications.dailyReminderTime).slice(0, 5);
         }
 
+        // nutrition: daily calorie target (validated number or null)
+        if (req.body.nutrition && typeof req.body.nutrition === "object") {
+            if (req.body.nutrition.dailyCalorieTarget !== undefined) {
+                const t = req.body.nutrition.dailyCalorieTarget;
+                if (t === null || t === "" ) {
+                    settings.nutrition.dailyCalorieTarget = null;
+                } else {
+                    const n = Number(t);
+                    settings.nutrition.dailyCalorieTarget = Number.isFinite(n) && n >= 800 && n <= 10000
+                        ? Math.round(n)
+                        : settings.nutrition.dailyCalorieTarget;
+                }
+            }
+        }
+
         await settings.save();
         res.json({ success: true, settings });
     } catch (e) {
@@ -532,7 +548,7 @@ router.patch("/settings", auth, async (req, res) => {
 // ============================================================
 router.get("/export", auth, async (req, res) => {
     try {
-        const [user, settings, areas, habits, completions, tasks, goals, journals, snapshots, achievements] = await Promise.all([
+        const [user, settings, areas, habits, completions, tasks, goals, journals, snapshots, achievements, meals] = await Promise.all([
             User.findById(req.userId).select("-password -__v"),
             Settings.find({ userId: req.userId }).select("-__v"),
             Area.find({ userId: req.userId }).select("-__v"),
@@ -542,7 +558,8 @@ router.get("/export", auth, async (req, res) => {
             Goal.find({ userId: req.userId }).select("-__v"),
             JournalEntry.find({ userId: req.userId }).select("-__v"),
             ProgressSnapshot.find({ userId: req.userId }).select("-__v"),
-            UserAchievement.find({ userId: req.userId }).select("-__v")
+            UserAchievement.find({ userId: req.userId }).select("-__v"),
+            Meal.find({ userId: req.userId }).select("-__v").limit(2000)
         ]);
 
         res.setHeader("Content-Type", "application/json");
@@ -559,7 +576,8 @@ router.get("/export", auth, async (req, res) => {
             goals,
             journals,
             snapshots,
-            achievements
+            achievements,
+            meals
         });
     } catch (e) {
         res.status(500).json({ success: false, message: "Export failed" });
@@ -580,7 +598,8 @@ router.post("/reset", auth, async (req, res) => {
             JournalEntry.deleteMany({ userId: req.userId }),
             ProgressSnapshot.deleteMany({ userId: req.userId }),
             UserAchievement.deleteMany({ userId: req.userId }),
-            Notification.deleteMany({ userId: req.userId })
+            Notification.deleteMany({ userId: req.userId }),
+            Meal.deleteMany({ userId: req.userId })
         ]);
         await User.updateOne({ _id: req.userId }, { $set: { xp: 0, onboarded: false } });
         res.json({ success: true, message: "All progress cleared. Fresh start." });
@@ -592,7 +611,8 @@ router.post("/reset", auth, async (req, res) => {
 router.post("/delete-account", auth, async (req, res) => {
     try {
         // destructive — require explicit confirmation flag from the client
-        if (req.body.confirm !== "DELETE") {
+        // (req.body?.: Express 5 leaves body undefined for bodyless requests)
+        if (req.body?.confirm !== "DELETE") {
             return res.status(400).json({ success: false, message: "Missing confirmation" });
         }
         const uid = req.userId;
@@ -606,7 +626,8 @@ router.post("/delete-account", auth, async (req, res) => {
             UserAchievement.deleteMany({ userId: uid }),
             Notification.deleteMany({ userId: uid }),
             Settings.deleteMany({ userId: uid }),
-            Area.deleteMany({ userId: uid })
+            Area.deleteMany({ userId: uid }),
+            Meal.deleteMany({ userId: uid })
         ]);
         await User.findByIdAndDelete(uid);
         res.clearCookie("token");

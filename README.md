@@ -8,8 +8,9 @@ ASCEND is a full-stack application (React + Vite frontend, Express + MongoDB bac
 
 ```
 server/          Express API (Node.js, CommonJS)
-  routes/        auth.js · data.js · insights.js
-  models/        Mongoose schemas (User, Habit, Goal, Task, JournalEntry, …)
+  routes/        auth.js · data.js · insights.js · nutrition.js
+  models/        Mongoose schemas (User, Habit, Goal, Task, Meal, JournalEntry, …)
+  services/      FatSecret nutrition provider + image-recognition abstraction
   utils/         scoring engine, XP/levels, achievements, goal progress, date helpers, mailer
   test/          self-contained API test suite
 client/          React 19 + Vite frontend (ESM)
@@ -46,16 +47,25 @@ cd server
 npm test
 ```
 
-`npm test` runs two suites:
+`npm test` runs four suites:
 
 1. **Scoring unit tests** (`test/scoring.test.js`) — pure functions, **no
    database needed**. Covers the day-score matrix (boolean/numeric habits,
    the `habitsDone <= habitsScheduled` invariant, weekly-target evaluation,
    XP tiers, level boundaries).
-2. **API test suite** (`test/run-tests.js`) — spawns a throwaway backend on
+2. **Nutrition service tests** (`test/nutrition.test.js`) — FatSecret OAuth2
+   + search/details against a **mocked HTTP layer** (no network, no live API).
+   Covers token caching, request shapes, response normalization, error
+   mapping (429 → RATE_LIMITED, auth failure → PROVIDER_AUTH), and the
+   honest Premier-required states for photo/barcode.
+3. **API test suite** (`test/run-tests.js`) — spawns a throwaway backend on
    port 4590 against a **dedicated test database**, drives the real HTTP API
    (auth, ownership isolation, XP idempotency, recurrence dedup, validation,
    destructive-op gates), then drops the scratch DB.
+4. **Nutrition API tests** (`test/nutrition-api.test.js`) — meal CRUD,
+   ownership isolation, server-side totals recalculation (client-sent totals
+   are ignored), validation, and safe provider-failure states, on its own
+   scratch DB (port 4591).
 
 ### Test database configuration (never production)
 
@@ -102,6 +112,25 @@ Required environment variables (see `server/.env.example`):
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `EMAIL_FROM` | Optional. Password-reset emails. **Without SMTP, password reset is disabled** (codes are logged server-side only, never returned to clients) |
 | `INVITE_CODE` | Optional. If set, registration is invite-only — the signup form requires this code. Recommended for private personal deployments |
 | `SERVE_STATIC` | Optional. Set to `false` to force API-only mode even when `client/dist` exists |
+| `FATSECRET_CLIENT_ID` / `FATSECRET_CLIENT_SECRET` | FatSecret Platform API credentials — power the Nutrition food search. Server-side only; never exposed to the frontend |
+| `NUTRITION_PHOTO_ENABLED` / `NUTRITION_BARCODE_ENABLED` | Optional. Set to `true` ONLY if your FatSecret key is **Premier** (Image Recognition & Barcode Scanning are Premier-exclusive) or a vision provider is wired into `server/services/imageRecognitionService.js`. Leave unset for honest "unavailable" states |
+
+## Nutrition feature
+
+Powered by the [FatSecret Platform API](https://platform.fatsecret.com/docs) (server-side only).
+
+**To configure:** register at platform.fatsecret.com, create an app, copy the Client ID + Secret into `FATSECRET_CLIENT_ID` / `FATSECRET_CLIENT_SECRET`, and (for production) allowlist your server's outbound IP in the FatSecret app settings — OAuth 2.0 tokens can only be requested from IPs you register there.
+
+| Capability | Status with a free/basic key | Notes |
+| --- | --- | --- |
+| Food search (`foods.search`) | ✅ IMPLEMENTED | Covers generic, brand, restaurant and packaged foods — Indian, continental, international |
+| Food details + servings (`food.get.v4`) | ✅ IMPLEMENTED | Every serving listed; quantity + grams selection; live nutrition preview |
+| Meal CRUD + daily totals | ✅ IMPLEMENTED | Totals recalculated server-side; date navigation; per-meal editing |
+| Calorie target | ✅ IMPLEMENTED | Optional, user-defined (Settings → Nutrition). Not auto-prescribed, not medical advice |
+| Photo meal scanner | ⚠️ SUPPORTED BUT REQUIRES PROVIDER ACCESS | FatSecret Image Recognition is **Premier-exclusive**. UI shows an honest unavailable state; a provider plugs into `services/imageRecognitionService.js` without UI changes |
+| Barcode lookup | ⚠️ SUPPORTED BUT REQUIRES PROVIDER ACCESS | FatSecret Barcode Scanning is **Premier-exclusive**. Manual nutrition-facts entry is the always-available fallback |
+
+Note on data retention: FatSecret's terms allow caching food **IDs** indefinitely but other data at most 24 h — ASCEND therefore fetches nutrient data live at meal-selection time and stores only what you log in your own meal records.
 
 Security behavior driven by `NODE_ENV`:
 
