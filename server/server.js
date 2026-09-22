@@ -11,6 +11,7 @@ const authRoutes = require("./routes/auth");
 const dataRoutes = require("./routes/data");
 const insightRoutes = require("./routes/insights");
 const nutritionRoutes = require("./routes/nutrition");
+const gymRoutes = require("./routes/gym");
 
 const app = express();
 
@@ -67,11 +68,13 @@ const apiLimiter = rateLimit({
     message: { success: false, message: "Too many requests. Slow down." }
 });
 
-// Rate limiting for the external nutrition provider routes — each call
-// fans out to FatSecret, so keep it tighter than the general API limit.
+// Rate limiting for the nutrition analysis/search routes. Search now runs
+// locally against the bundled USDA corpus (no external API), but these stay
+// tighter than the general API limit because they fan out into multi-query
+// resolution and gram-engine work.
 const nutritionLimiter = rateLimit({
     windowMs: 60 * 1000,
-    limit: 30,
+    limit: 60,
     standardHeaders: "draft-7",
     legacyHeaders: false,
     message: { success: false, message: "Too many nutrition lookups. Slow down a little." }
@@ -86,13 +89,13 @@ app.use("/api/auth/forgot-password", authLimiter);
 app.use("/api/auth/reset-password", authLimiter);
 app.use("/api/nutrition/search", nutritionLimiter);
 app.use("/api/nutrition/food", nutritionLimiter);
-app.use("/api/nutrition/barcode", nutritionLimiter);
 app.use("/api/nutrition/analyze-photo", nutritionLimiter);
 app.use("/api", apiLimiter);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/data", dataRoutes);
 app.use("/api/nutrition", nutritionRoutes);
+app.use("/api/gym", gymRoutes);
 app.use("/api", insightRoutes);
 
 // Health check: safe, no config exposure, DB ping included (no credentials).

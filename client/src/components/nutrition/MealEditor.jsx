@@ -4,61 +4,80 @@ import api from "../../services/api";
 import { useStore } from "../../store/AppStore";
 import { Modal, Field, ConfirmDialog } from "../ui/Primitives";
 
-// Edit an existing meal: change meal type, adjust per-food quantity/grams,
-// remove foods, or delete the whole meal. Totals are recomputed server-side.
+// Edit an existing meal — the correction flow.
+//
+// Every edit is a DETERMINISTIC change applied through the dedicated
+// correction endpoints (grams, portion eaten, remove row), exactly like
+// Nut AI's repair loop: arithmetic over stored per-100g snapshots, no model
+// call anywhere. The meal band updates from the server's response.
 export default function MealEditor({ meal, onClose, onSaved }) {
     const { toast } = useStore();
-    const [mealType, setMealType] = useState(meal.mealType);
-    const [foods, setFoods] = useState(meal.foods.map((f) => ({ ...f })));
-    const [notes, setNotes] = useState(meal.notes || "");
+    const [rows, setRows] = useState((meal.ingredients || []).map((r) => ({ ...r })));
+    const [portion, setPortion] = useState(meal.portionEatenFraction ?? 1);
+    const [busyId, setBusyId] = useState(null);
     const [saving, setSaving] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
 
-    const totals = foods.reduce(
-        (acc, f) => {
-            const q = Number(f.quantity) || 1;
-            acc.calories += (Number(f.calories) || 0) * q;
-            acc.protein += (Number(f.protein) || 0) * q;
-            acc.carbs += (Number(f.carbs) || 0) * q;
-            acc.fat += (Number(f.fat) || 0) * q;
-            return acc;
-        },
-        { calories: 0, protein: 0, carbs: 0, fat: 0 }
-    );
+    const kcal = rows.reduce((s, r) => {
+        const snap = r.nutrientSnapshot || {};
+        return s + (snap.kcal || 0) * (r.grams / 100);
+    }, 0) * portion;
 
-    function updateFood(idx, patch) {
-        setFoods((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+    function replaceMeal(next) {
+        setRows((next.ingredients || []).map((r) => ({ ...r })));
+        setPortion(next.portionEatenFraction ?? 1);
+        onSaved(next);
     }
 
-    async function save() {
-        setSaving(true);
+    // Correction: edit grams on one row (the ONE quantity the user edits).
+    async function setRowGrams(row, gramsText) {
+        const grams = Number(gramsText);
+        if (!Number.isFinite(grams) || grams < 1 || grams > 5000 || grams === row.grams) return;
+        setBusyId(row.id);
         try {
-            await api.put(`/nutrition/meals/${meal._id}`, {
-                mealType,
-                notes,
-                foods: foods.map((f) => ({
-                    provider: f.provider,
-                    providerFoodId: f.providerFoodId,
-                    name: f.name,
-                    brand: f.brand || "",
-                    servingDescription: f.servingDescription || "",
-                    servingId: f.servingId || null,
-                    quantity: Number(f.quantity) || 1,
-                    grams: f.grams != null ? Number(f.grams) : null,
-                    calories: Number(f.calories) || 0,
-                    protein: Number(f.protein) || 0,
-                    carbs: Number(f.carbs) || 0,
-                    fat: Number(f.fat) || 0,
-                    estimated: !!f.estimated
-                }))
-            });
-            toast("Meal updated");
-            onClose();
-            onSaved();
+            const res = await api.patch(`/nutrition/meals/${meal._id}/rows/${encodeURIComponent(row.id)}/grams`, { grams });
+            replaceMeal(res.data.meal);
+            toast("Portion updated — recalculated");
         } catch (e) {
-            toast(e.response?.data?.message || "Failed to update meal");
+            toast(e.response?.data?.message || "Failed to update portion");
         } finally {
-            setSaving(false);
+            setBusyId(null);
+        }
+    }
+
+    // Correction: "I ate about half of this plate."
+    async function setPortionEaten(value) {
+        const p = Number(value);
+        if (!Number.isFinite(p) || p < 0.05 || p > 1 || p === portion) return;
+        setBusyId("portion");
+        try {
+            const res = await api.patch(`/nutrition/meals/${meal._id}/portion`, { portionEatenFraction: p });
+            replaceMeal(res.data.meal);
+            toast("Portion eaten updated");
+        } catch (e) {
+            toast(e.response?.data?.message || "Failed to update portion eaten");
+        } finally {
+            setBusyId(null);
+        }
+    }
+
+    // Correction: remove one ingredient row ("there was no cheese").
+    async function removeRow(row) {
+        setBusyId(row.id);
+        try {
+            const res = await api.delete(`/nutrition/meals/${meal._id}/rows/${encodeURIComponent(row.id)}`);
+            if (res.data.deleted) {
+                toast("Meal removed — no ingredients left");
+                onSaved();
+                onClose();
+                return;
+            }
+            replaceMeal(res.data.meal);
+            toast("Ingredient removed — recalculated");
+        } catch (e) {
+            toast(e.response?.data?.message || "Failed to remove ingredient");
+        } finally {
+            setBusyId(null);
         }
     }
 
@@ -82,73 +101,100 @@ export default function MealEditor({ meal, onClose, onSaved }) {
                 open
                 onClose={onClose}
                 title="Edit meal"
-                subtitle={meal.foods.map((f) => f.name).join(" + ")}
+                subtitle={(meal.ingredients || []).map((r) => r.displayName).join(" + ")}
                 large
                 actions={
                     <>
                         <button className="btn danger ghost" style={{ marginRight: "auto" }} onClick={() => setConfirmDelete(true)}>
                             <Trash2 size={14} /> Delete
                         </button>
-                        <button className="btn ghost" onClick={onClose} disabled={saving}>Cancel</button>
-                        <button className="btn primary" onClick={save} disabled={saving || foods.length === 0}>
-                            {saving ? "Saving…" : `Save — ${Math.round(totals.calories).toLocaleString()} kcal`}
-                        </button>
+                        <button className="btn ghost" onClick={onClose} disabled={saving}>Done</button>
                     </>
                 }
             >
-                <Field label="Meal">
-                    <select className="input" value={mealType} onChange={(e) => setMealType(e.target.value)}>
-                        <option value="breakfast">Breakfast</option>
-                        <option value="lunch">Lunch</option>
-                        <option value="dinner">Dinner</option>
-                        <option value="snack">Snack</option>
+                <p className="hint" style={{ marginTop: 0 }}>
+                    Each change recalculates instantly from the stored nutrition data — nothing is re-guessed.
+                </p>
+
+                {/* rank-1 question: did you eat all of it? */}
+                <Field label="How much of this did you eat?">
+                    <select
+                        className="input"
+                        value={String(portion)}
+                        disabled={busyId === "portion"}
+                        onChange={(e) => setPortionEaten(e.target.value)}
+                    >
+                        <option value="1">All of it</option>
+                        <option value="0.75">About three quarters</option>
+                        <option value="0.5">About half</option>
+                        <option value="0.25">A little</option>
                     </select>
                 </Field>
 
                 <div className="grid" style={{ gap: 10, marginTop: 4 }}>
-                    {foods.map((f, idx) => (
-                        <div key={idx} className="card plain nutrition-edit-food">
-                            <div className="nutrition-edit-food-head">
-                                <span className="nutrition-meal-name">{f.name}</span>
-                                <button className="icon-btn" aria-label={`Remove ${f.name}`} onClick={() => setFoods((prev) => prev.filter((_, i) => i !== idx))}>
-                                    <Trash2 size={14} />
-                                </button>
-                            </div>
-                            <p className="hint">{f.servingDescription || "per serving"} · {Math.round((f.calories || 0) * (Number(f.quantity) || 1))} kcal each serving</p>
-                            <div className="field-row nutrition-serving-row">
-                                <Field label="Quantity">
-                                    <input
-                                        className="input"
-                                        type="number"
-                                        inputMode="decimal"
-                                        min="0.01"
-                                        max="50"
-                                        step="0.25"
-                                        value={f.quantity}
-                                        onChange={(e) => updateFood(idx, { quantity: e.target.value })}
-                                    />
-                                </Field>
-                                {f.provider === "fatsecret" && f.grams != null && (
+                    {rows.map((r) => {
+                        const snap = r.nutrientSnapshot || {};
+                        const rowKcal = (snap.kcal || 0) * (r.grams / 100) * portion;
+                        return (
+                            <div key={r.id} className="card plain nutrition-edit-food">
+                                <div className="nutrition-edit-food-head">
+                                    <span className="nutrition-meal-name">{r.displayName}</span>
+                                    <button
+                                        className="icon-btn"
+                                        aria-label={`Remove ${r.displayName}`}
+                                        disabled={busyId === r.id}
+                                        onClick={() => removeRow(r)}
+                                    >
+                                        <Trash2 size={14} />
+                                    </button>
+                                </div>
+                                <p className="hint">
+                                    {snap.kcal != null ? `${Math.round(snap.kcal)} kcal per 100 g` : "energy not reported"}
+                                    {r.isEstimate ? " · AI estimate" : ""}
+                                </p>
+                                <div className="field-row nutrition-serving-row">
                                     <Field label="Grams">
                                         <input
                                             className="input"
                                             type="number"
-                                            inputMode="numeric"
-                                            min="0"
-                                            value={f.grams || ""}
-                                            onChange={(e) => updateFood(idx, { grams: e.target.value === "" ? null : Number(e.target.value) })}
+                                            inputMode="decimal"
+                                            min="1"
+                                            max="5000"
+                                            defaultValue={r.grams}
+                                            disabled={busyId === r.id}
+                                            onBlur={(e) => setRowGrams(r, e.target.value)}
+                                            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
                                         />
                                     </Field>
+                                    <Field label="Calories">
+                                        <span className="mono-num" style={{ lineHeight: "42px" }}>
+                                            {Math.round(rowKcal).toLocaleString()} kcal
+                                        </span>
+                                    </Field>
+                                </div>
+                                {r.assumptions?.filter((a) => !a.userConfirmed).length > 0 && (
+                                    <p className="hint" style={{ marginTop: 6 }}>
+                                        Assumed: {r.assumptions.filter((a) => !a.userConfirmed).map((a) => a.type).join("; ")}
+                                    </p>
                                 )}
                             </div>
-                            {f.estimated && <span className="badge">estimated — photo</span>}
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
 
-                <Field label="Notes (optional)">
-                    <input className="input" maxLength={500} placeholder="e.g. homemade, extra ghee" value={notes} onChange={(e) => setNotes(e.target.value)} />
-                </Field>
+                <div className="card plain" style={{ padding: "12px 14px", marginTop: 10 }}>
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                        <span className="p-label">MEAL TOTAL</span>
+                        {meal.band && meal.band.tier !== "none" && (
+                            <span className="hint">
+                                {meal.band.tier === "tight" ? "±15%" : meal.band.tier === "moderate" ? "±30%" : "±45%+"}
+                            </span>
+                        )}
+                    </div>
+                    <div className="mono-num" style={{ fontSize: 22 }}>
+                        {Math.round(kcal).toLocaleString()} kcal
+                    </div>
+                </div>
             </Modal>
 
             <ConfirmDialog

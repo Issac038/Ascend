@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 import {
     LayoutDashboard, Sun, Repeat, Target, BookOpen, BarChart3,
-    Award, User, Settings as SettingsIcon, LogOut, Layers, MoreHorizontal, Apple
+    Award, User, Settings as SettingsIcon, LogOut, Layers, MoreHorizontal, Apple, Dumbbell
 } from "lucide-react";
 
 import { StoreProvider, useStore } from "./store/AppStore";
@@ -22,12 +22,14 @@ const Profile = lazy(() => import("./components/profile/Profile"));
 const SettingsPage = lazy(() => import("./components/settings/SettingsPage"));
 const Areas = lazy(() => import("./components/areas/Areas"));
 const Nutrition = lazy(() => import("./components/nutrition/Nutrition"));
+const Gym = lazy(() => import("./components/gym/Gym"));
 
 const NAV = [
     { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, mobile: true },
     { to: "/today", label: "Today", icon: Sun, mobile: true },
     { to: "/habits", label: "Habits", icon: Repeat, mobile: true },
     { to: "/nutrition", label: "Nutrition", icon: Apple, mobile: true },
+    { to: "/gym", label: "Gym", icon: Dumbbell, mobile: false },
     { to: "/goals", label: "Goals", icon: Target, mobile: true },
     { to: "/journal", label: "Journal", icon: BookOpen, mobile: false },
     { to: "/analytics", label: "Analytics", icon: BarChart3, mobile: false },
@@ -154,6 +156,7 @@ function Shell() {
                             <Route path="/habits" element={<Habits />} />
                             <Route path="/goals" element={<Goals />} />
                             <Route path="/nutrition" element={<Nutrition />} />
+                            <Route path="/gym" element={<Gym />} />
                             <Route path="/journal" element={<Journal />} />
                             <Route path="/analytics" element={<Analytics />} />
                             <Route path="/achievements" element={<Achievements />} />

@@ -10,27 +10,33 @@ import MealEditor from "./MealEditor";
 const MEAL_ORDER = ["breakfast", "lunch", "dinner", "snack"];
 const MEAL_LABELS = { breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner", snack: "Snacks" };
 
-// Mirrors the server's mealTotals (Σ per-serving × quantity) so the day's
-// summary updates instantly and identically when an entry is deleted.
-function recalcTotals(meals) {
-    let calories = 0;
-    let protein = 0;
-    let carbs = 0;
-    let fat = 0;
+// Mirrors the server's dayTotals exactly (per-100g snapshot x grams/100,
+// x portionEatenFraction, display-rounded) so the day's summary updates
+// instantly and identically when an entry is deleted.
+function recalcDay(meals) {
+    const acc = { kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0 };
     for (const m of meals) {
-        for (const f of m.foods || []) {
-            const q = Number(f.quantity) || 1;
-            calories += (Number(f.calories) || 0) * q;
-            protein += (Number(f.protein) || 0) * q;
-            carbs += (Number(f.carbs) || 0) * q;
-            fat += (Number(f.fat) || 0) * q;
+        const p = m.portionEatenFraction == null ? 1 : m.portionEatenFraction;
+        for (const r of m.ingredients || []) {
+            const s = r.nutrientSnapshot || {};
+            const f = (r.grams / 100) * p;
+            acc.kcal += (s.kcal || 0) * f;
+            acc.protein_g += (s.protein_g || 0) * f;
+            acc.carbs_g += (s.carbs_g || 0) * f;
+            acc.fat_g += (s.fat_g || 0) * f;
         }
     }
+    // display regime B: kcal from rounded macros (matches the server exactly)
+    const protein_g = acc.protein_g < 10 ? Math.round(acc.protein_g * 10) / 10 : Math.round(acc.protein_g);
+    const fat_g = acc.fat_g < 10 ? Math.round(acc.fat_g * 10) / 10 : Math.round(acc.fat_g);
+    const carbs_g = acc.carbs_g < 10 ? Math.round(acc.carbs_g * 10) / 10 : Math.round(acc.carbs_g);
     return {
-        totalCalories: Math.round(calories),
-        totalProtein: Math.round(protein * 10) / 10,
-        totalCarbs: Math.round(carbs * 10) / 10,
-        totalFat: Math.round(fat * 10) / 10
+        totals: {
+            kcal: Math.round(protein_g * 4 + carbs_g * 4 + fat_g * 9),
+            protein_g,
+            fat_g,
+            carbs_g,
+        },
     };
 }
 
@@ -81,10 +87,10 @@ export default function Nutrition() {
         return map;
     }, [data]);
 
-    const totals = data?.totals || { totalCalories: 0, totalProtein: 0, totalCarbs: 0, totalFat: 0 };
+    const totals = data?.totals || { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
     const target = settings?.nutrition?.dailyCalorieTarget || null;
-    const remaining = target != null ? target - totals.totalCalories : null;
-    const pct = target != null ? Math.min(100, Math.round((totals.totalCalories / target) * 100)) : null;
+    const remaining = target != null ? target - totals.kcal : null;
+    const pct = target != null ? Math.min(100, Math.round((totals.kcal / target) * 100)) : null;
 
     async function saveTarget(value) {
         // optimistic + refetch — Settings PATCH validates server-side
@@ -96,8 +102,18 @@ export default function Nutrition() {
         }
     }
 
-    function onSaved() {
-        load(date);
+    function onSaved(updated) {
+        // A correction endpoint returns the updated meal — swap it in
+        // locally and recompute; otherwise refetch the day.
+        if (updated && updated._id && data) {
+            setData((prev) => {
+                if (!prev) return prev;
+                const meals = prev.meals.map((m) => (m._id === updated._id ? updated : m));
+                return { ...prev, meals, ...recalcDay(meals) };
+            });
+        } else {
+            load(date);
+        }
     }
 
     // Delete the confirmed entry via the existing authenticated endpoint,
@@ -113,7 +129,7 @@ export default function Nutrition() {
             setData((prev) => {
                 if (!prev) return prev;
                 const meals = prev.meals.filter((m) => m._id !== meal._id);
-                return { ...prev, meals, totals: recalcTotals(meals) };
+                return { ...prev, meals, ...recalcDay(meals) };
             });
             toast("Entry deleted");
         } catch {
@@ -139,8 +155,8 @@ export default function Nutrition() {
 
             {capabilities && !capabilities.configured && (
                 <div className="card plain nutrition-notice">
-                    Nutrition search is temporarily unavailable — the FatSecret API keys are not configured on the
-                    server. Meals you have already logged still show below, and everything else in ASCEND is unaffected.
+                    The nutrition food corpus isn't loaded on the server yet — search is unavailable until it is.
+                    Meals you have already logged still show below, and everything else in ASCEND is unaffected.
                 </div>
             )}
 
@@ -166,11 +182,11 @@ export default function Nutrition() {
                 <div className="nutrition-kcal">
                     <div>
                         <div className="p-label">CALORIES</div>
-                        <div className="nutrition-kcal-big mono-num">{totals.totalCalories.toLocaleString()}<span> kcal</span></div>
+                        <div className="nutrition-kcal-big mono-num">{(totals.kcal || 0).toLocaleString()}<span> kcal</span></div>
                     </div>
                     {target != null ? (
                         <div className="nutrition-target">
-                            <div className="mono-num nutrition-kcal-goal">{totals.totalCalories.toLocaleString()} / {target.toLocaleString()} kcal</div>
+                            <div className="mono-num nutrition-kcal-goal">{(totals.kcal || 0).toLocaleString()} / {target.toLocaleString()} kcal</div>
                             <div className={remaining < 0 ? "over" : ""}>
                                 {remaining >= 0 ? `${remaining.toLocaleString()} kcal remaining` : `${Math.abs(remaining).toLocaleString()} kcal over`}
                             </div>
@@ -183,9 +199,9 @@ export default function Nutrition() {
                     )}
                 </div>
                 <div className="nutrition-macros">
-                    <Macro icon={<Flame size={13} />} label="Protein" value={totals.totalProtein} unit="g" />
-                    <Macro icon={<Beef size={13} />} label="Carbs" value={totals.totalCarbs} unit="g" />
-                    <Macro icon={<Wheat size={13} />} label="Fat" value={totals.totalFat} unit="g" />
+                    <Macro icon={<Flame size={13} />} label="Protein" value={totals.protein_g} unit="g" />
+                    <Macro icon={<Beef size={13} />} label="Carbs" value={totals.carbs_g} unit="g" />
+                    <Macro icon={<Wheat size={13} />} label="Fat" value={totals.fat_g} unit="g" />
                 </div>
                 <p className="hint nutrition-disclaimer">
                     {target != null
@@ -256,7 +272,7 @@ export default function Nutrition() {
                 onConfirm={confirmDeleteMeal}
                 title="Delete this food entry?"
                 message={confirmMeal
-                    ? `${confirmMeal.foods.map((f) => f.name).join(" + ")}${confirmMeal.totalCalories ? ` — ${confirmMeal.totalCalories.toLocaleString()} kcal` : ""} will be removed from the day's totals. This cannot be undone.`
+                    ? `${(confirmMeal.ingredients || []).map((r) => r.displayName).join(" + ")}${confirmMeal.totals?.kcal ? ` — ${confirmMeal.totals.kcal.toLocaleString()} kcal` : ""} will be removed from the day's totals. This cannot be undone.`
                     : ""}
                 confirmLabel="Delete"
                 danger
@@ -271,7 +287,7 @@ function Macro({ icon, label, value, unit }) {
         <div className="nutrition-macro">
             <span className="nutrition-macro-icon">{icon}</span>
             <span className="nutrition-macro-label">{label}</span>
-            <span className="mono-num">{Math.round(value)}<span className="nutrition-macro-unit">{unit}</span></span>
+            <span className="mono-num">{Math.round(value || 0)}<span className="nutrition-macro-unit">{unit}</span></span>
         </div>
     );
 }
@@ -317,8 +333,13 @@ function CalorieTargetInline({ value, onSave }) {
     );
 }
 
+function mealKcal(m) {
+    const p = m.portionEatenFraction == null ? 1 : m.portionEatenFraction;
+    return Math.round((m.ingredients || []).reduce((s, r) => s + ((r.nutrientSnapshot?.kcal || 0) * r.grams) / 100, 0) * p);
+}
+
 function MealSection({ type, meals, onEdit, onAdd, onDelete, deleteBusy }) {
-    const kcal = meals.reduce((s, m) => s + (m.totalCalories || 0), 0);
+    const kcal = meals.reduce((s, m) => s + mealKcal(m), 0);
     return (
         <div className="card nutrition-meal-section">
             <div className="nutrition-section-head">
@@ -337,23 +358,24 @@ function MealSection({ type, meals, onEdit, onAdd, onDelete, deleteBusy }) {
                 <div className="grid" style={{ gap: 8 }}>
                     {meals.map((m) => (
                         <div key={m._id} className="nutrition-meal-row-wrap">
-                            <button className="nutrition-meal-row" onClick={() => onEdit(m)} aria-label={`Edit ${m.foods.map((f) => f.name).join(", ")}`}>
+                            <button className="nutrition-meal-row" onClick={() => onEdit(m)} aria-label={`Edit ${(m.ingredients || []).map((r) => r.displayName).join(", ")}`}>
                                 <div className="nutrition-meal-info">
                                     <span className="nutrition-meal-name">
-                                        {m.foods.map((f) => f.name).join(" + ")}
+                                        {(m.ingredients || []).map((r) => r.displayName).join(" + ")}
                                     </span>
                                     <span className="hint">
-                                        {m.source === "photo" ? "estimated" : MEAL_LABELS[m.mealType]} · {formatShort(m.date === m.createdAt?.slice(0, 10) ? m.date : m.date)}
+                                        {(m.ingredients || []).some((r) => r.isEstimate) ? "contains estimates" : MEAL_LABELS[m.mealType]}
+                                        {m.portionEatenFraction != null && m.portionEatenFraction < 1 ? ` · ate ${Math.round(m.portionEatenFraction * 100)}%` : ""}
                                         {m.notes ? ` · ${m.notes}` : ""}
                                     </span>
                                 </div>
-                                <span className="mono-num nutrition-meal-kcal">{m.totalCalories?.toLocaleString()}<span> kcal</span></span>
+                                <span className="mono-num nutrition-meal-kcal">{mealKcal(m).toLocaleString()}<span> kcal</span></span>
                             </button>
                             <button
                                 className="nutrition-meal-delete"
                                 onClick={() => onDelete(m)}
                                 disabled={deleteBusy}
-                                aria-label={`Delete ${m.foods.map((f) => f.name).join(", ")}`}
+                                aria-label={`Delete ${(m.ingredients || []).map((r) => r.displayName).join(", ")}`}
                             >
                                 <Trash2 size={15} />
                             </button>

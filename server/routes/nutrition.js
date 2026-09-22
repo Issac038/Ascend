@@ -2,18 +2,28 @@ const express = require("express");
 
 const auth = require("../middleware/auth");
 const { isValidDateKey, todayKeyFor } = require("../utils/date");
-const nutrition = require("../services/nutritionService");
-const imageRecognition = require("../services/imageRecognitionService");
-const Meal = require("../models/Meal");
 const User = require("../models/User");
+const { Meal, MealPrior, MealAnswerMemory } = require("../models/Meal");
+const engine = require("../nutrition/index");
+const { validateVisionPayload, validateLabelPayload, ValidationError } = require("../nutrition/schema");
+const { clamp, totals, confidence, repair, resolver } = require("../nutrition/index");
+const { canonicalConceptKey, updatePrior, isTrusted } = require("../nutrition/gramEngine");
 
 const router = express.Router();
 
 const MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"];
-const SOURCES = ["search", "photo", "barcode", "manual"];
+const MEAL_SOURCES = ["photo", "manual", "db_search", "label"];
 
 function validIdOr400(id) {
     return /^[0-9a-fA-F]{24}$/.test(String(id || ""));
+}
+
+let mongoose_corpus_collection = null;
+function getColl() {
+    if (!mongoose_corpus_collection) {
+        mongoose_corpus_collection = require("mongoose").connection.collection("nutrition_foods");
+    }
+    return mongoose_corpus_collection;
 }
 
 async function userTz(userId) {
@@ -21,183 +31,123 @@ async function userTz(userId) {
     return (u && u.timezoneOffset) || 0;
 }
 
-// ------------------------------------------------------------
-// FOOD NORMALIZATION + AUTHORITATIVE NUTRITION RESOLUTION
-//
-// SECURITY: the client NEVER gets to dictate nutrition values for a
-// provider (FatSecret) food. Provider foods are re-resolved server-side
-// from FatSecret (cached ≤6h) using providerFoodId + servingId (+ grams);
-// client-sent calories/macros for those foods are ignored entirely.
-// Only `manual` foods (user-typed label values) accept client numbers,
-// clamped to sane ranges, and are stored with provider:"manual".
-// ------------------------------------------------------------
-function clampManualFood(raw) {
-    const out = {
-        provider: "manual",
-        providerFoodId: null,
-        name: String(raw.name || "").trim().slice(0, 200),
-        brand: String(raw.brand || "").slice(0, 120),
-        servingDescription: String(raw.servingDescription || "").slice(0, 200),
-        servingId: null,
-        quantity: Math.min(Math.max(Number(raw.quantity) || 1, 0.01), 50),
-        grams: raw.grams != null && Number.isFinite(Number(raw.grams))
-            ? Math.min(Math.max(Number(raw.grams), 0), 5000)
-            : null,
-        estimated: !!raw.estimated
-    };
-    if (!out.name) return null;
-
-    for (const [key, max] of [["calories", 5000], ["protein", 500], ["carbs", 500], ["fat", 500]]) {
-        const n = Number(raw[key]);
-        out[key] = Number.isFinite(n) ? Math.min(Math.max(n, 0), max) : 0;
+async function priorsFor(userId) {
+    const docs = await MealPrior.find({ userId }).lean();
+    const map = new Map();
+    for (const d of docs) {
+        map.set(d.foodConceptKey, {
+            foodConceptKey: d.foodConceptKey,
+            ewmaRatio: d.ewmaRatio,
+            ratioVariance: d.ratioVariance,
+            sampleCount: d.sampleCount,
+            medianGrams: d.medianGrams,
+            lastCorrectedAt: d.lastCorrectedAt ? d.lastCorrectedAt.getTime() : Date.now(),
+        });
     }
-    // per-serving macros must be plausible relative to calories (fat 9/g,
-    // carbs & protein 4/g) — rejects obviously fabricated values
-    const macroKcal = out.protein * 4 + out.carbs * 4 + out.fat * 9;
-    if (out.calories > 0 && macroKcal > out.calories * 1.6 + 60) {
-        out.protein = 0;
-        out.carbs = 0;
-        out.fat = 0;
-    }
-    return out;
+    return map;
 }
 
-// Resolve every food in a payload. Throws Error with .status/.code on
-// failure — the meal is REJECTED, never stored with unverifiable values.
-async function resolveFoods(rawFoods) {
-    const foods = [];
-    for (const raw of rawFoods) {
-        const claimedProvider = raw.provider === "fatsecret" || (raw.provider !== "manual" && raw.providerFoodId);
-        if (claimedProvider) {
-            const name = String(raw.name || "this food").trim().slice(0, 60);
-            if (!raw.providerFoodId) {
-                const err = new Error(`"${name}" is missing a verified food reference — add it via Search, or enter it manually.`);
-                err.status = 400;
-                throw err;
-            }
-            let r;
-            try {
-                r = await nutrition.resolveFoodNutrition({
-                    providerFoodId: raw.providerFoodId,
-                    servingId: raw.servingId,
-                    grams: raw.grams,
-                    quantity: raw.quantity
-                });
-            } catch (e) {
-                if (e.code === "BAD_INPUT" || e.code === "NOT_FOUND") {
-                    const err = new Error(`We couldn't verify "${name}" against the nutrition provider. Try searching for it again, or enter it manually.`);
-                    err.status = 400;
-                    throw err;
-                }
-                if (e.code === "PROVIDER_IP") {
-                    const err = new Error("The nutrition provider rejected this server's IP address — add the server's outbound IPs to the FatSecret IP allowlist.");
-                    err.status = 403;
-                    err.code = "PROVIDER_IP";
-                    throw err;
-                }
-                const err = new Error("Could not verify nutrition with the provider right now. Please try again shortly.");
-                err.status = 502;
-                throw err;
-            }
-            const g = Number(raw.grams);
-            foods.push({
-                provider: "fatsecret",
-                providerFoodId: String(raw.providerFoodId).slice(0, 40),
-                name: r.name,
-                brand: r.brand,
-                servingDescription: r.servingDescription,
-                servingId: r.servingId,
-                quantity: r.quantity,
-                grams: Number.isFinite(g) && g > 0 ? Math.min(g, 5000) : null,
-                calories: r.calories,
-                protein: r.protein,
-                carbs: r.carbs,
-                fat: r.fat,
-                estimated: false
-            });
-        } else {
-            const manual = clampManualFood(raw);
-            if (manual) foods.push(manual);
-        }
+async function rememberedAnswersFor(userId, conceptKey) {
+    const docs = await MealAnswerMemory.find({ userId, foodConceptKey: conceptKey }).lean();
+    const map = new Map();
+    for (const d of docs) {
+        if (repair.shouldApplySilently(d)) map.set(d.attribute, d.value);
     }
-    return foods;
+    return map;
 }
 
-function mealTotals(foods) {
-    let calories = 0;
-    let protein = 0;
-    let carbs = 0;
-    let fat = 0;
-    for (const f of foods) {
-        const q = Number(f.quantity) || 1;
-        calories += (Number(f.calories) || 0) * q;
-        protein += (Number(f.protein) || 0) * q;
-        carbs += (Number(f.carbs) || 0) * q;
-        fat += (Number(f.fat) || 0) * q;
-    }
+// ------------------------------------------------------------
+// Totals for a stored meal — the engine's arithmetic, full precision
+// internally, display-rounded for the client (§6.3 regime B).
+// ------------------------------------------------------------
+function mealView(meal) {
+    const obj = meal.toObject ? meal.toObject() : meal;
+    const raw = totals.recomputeTotals(obj);
+    const display = totals.toDisplayTotals(raw);
+
+    // Meal band from per-row bands (quadrature, kcal-weighted, floored).
+    const banded = (obj.ingredients || []).map((row) => ({
+        kcal: totals.itemCalories(row),
+        band: {
+            halfPct: row.bandHalfPct,
+            reasons: row.isEstimate ? ["No database match for this item — it is an AI estimate."] : [],
+        },
+        rowId: row.id,
+    }));
+    const band = confidence.mealBand(banded);
+
     return {
-        totalCalories: Math.round(calories),
-        totalProtein: Math.round(protein * 10) / 10,
-        totalCarbs: Math.round(carbs * 10) / 10,
-        totalFat: Math.round(fat * 10) / 10
+        ...obj,
+        totals: display,
+        rawTotals: {
+            kcal: Math.round(raw.kcal * 10) / 10,
+            protein_g: Math.round(raw.protein_g * 10) / 10,
+            fat_g: Math.round(raw.fat_g * 10) / 10,
+            carbs_g: Math.round(raw.carbs_g * 10) / 10,
+        },
+        band,
     };
 }
 
-function withTotals(meal) {
-    const obj = meal.toObject();
-    return { ...obj, ...mealTotals(obj.foods) };
+function dayTotals(meals) {
+    const raw = meals.reduce((acc, m) => {
+        const t = totals.recomputeTotals(m);
+        acc.kcal += t.kcal;
+        acc.protein_g += t.protein_g;
+        acc.fat_g += t.fat_g;
+        acc.carbs_g += t.carbs_g;
+        acc.fiber_g += t.fiber_g;
+        acc.sugar_g += t.sugar_g;
+        acc.sodium_mg += t.sodium_mg;
+        return acc;
+    }, totals.zeroTotals());
+    return { totals: totals.toDisplayTotals(raw), raw: { kcal: raw.kcal, protein_g: raw.protein_g, fat_g: raw.fat_g, carbs_g: raw.carbs_g } };
 }
 
 // ============================================================
-// CAPABILITIES — what the current provider credentials actually enable.
-// Distinguishes: credentials missing vs provider auth failure vs network
-// vs rate limit. The UI uses this (and providerError) to show honest
-// states instead of guessing "keys not configured".
+// CAPABILITIES — truthful, derived from actual local state.
+// The engine is fully local (USDA corpus in MongoDB): search/details work
+// when the corpus is loaded; photo needs a vision provider (none configured
+// in Ascend yet — honest 501); barcode lookup is corpus-gated.
 // ============================================================
 router.get("/capabilities", auth, async (req, res) => {
     try {
-        const caps = await nutrition.capabilities();
-        res.json({ success: true, capabilities: caps });
+        let corpusCount = 0;
+        let corpusReady = false;
+        try {
+            corpusCount = await getColl().countDocuments();
+            corpusReady = corpusCount > 0;
+        } catch {
+            corpusReady = false;
+        }
+        res.json({
+            success: true,
+            capabilities: {
+                configured: corpusReady,
+                provider: "usda-fdc-local",
+                corpusFoods: corpusCount,
+                search: corpusReady,
+                foodDetails: corpusReady,
+                // Vision provider not integrated yet — honest, capability-gated.
+                photo: false,
+                photoReason: "vision_provider_not_configured",
+                // Barcode: camera scanning is a mobile-native capability; the
+                // web corpus lookup endpoint works, in-app camera scanning is
+                // not implemented.
+                barcode: corpusReady,
+                barcodeReason: "manual_entry_only",
+                labelScan: false,
+                labelReason: "vision_provider_not_configured",
+            },
+        });
     } catch (e) {
         console.error("capabilities error:", e.message);
         res.status(500).json({ success: false, message: "Could not check nutrition availability", code: "CAPS_ERROR" });
     }
 });
 
-// One place that maps service error codes to honest HTTP responses.
-// Never leaks upstream bodies, credentials, or tokens.
-function mapProviderError(e, res, unavailableMsg) {
-    if (e.status === 400 || e.code === "BAD_INPUT") {
-        return res.status(400).json({ success: false, message: e.message || "Invalid request", code: e.code || "BAD_INPUT" });
-    }
-    if (e.code === "NOT_CONFIGURED") {
-        return res.status(503).json({ success: false, message: "Nutrition provider is not configured on the server.", code: "NOT_CONFIGURED" });
-    }
-    if (e.code === "PROVIDER_AUTH") {
-        return res.status(503).json({ success: false, message: "Nutrition provider authentication failed — check the server's FatSecret configuration.", code: "PROVIDER_AUTH" });
-    }
-    if (e.code === "PROVIDER_DOWN" || e.code === "PROVIDER_DOWN_COOLDOWN") {
-        return res.status(503).json({ success: false, message: "Nutrition service is temporarily unreachable. Try again shortly.", code: "PROVIDER_DOWN" });
-    }
-    if (e.code === "RATE_LIMITED") {
-        return res.status(429).json({ success: false, message: "Nutrition search is rate limited right now. Try again in a moment.", code: "RATE_LIMITED" });
-    }
-    if (e.code === "PROVIDER_SCOPE") {
-        return res.status(501).json({ success: false, message: "This nutrition capability isn't available with the server's current FatSecret plan.", code: "PROVIDER_SCOPE" });
-    }
-    if (e.code === "PROVIDER_IP") {
-        // Log the rejected IP server-side only (it is this server's own
-        // outbound address, never a credential); the client gets a safe,
-        // actionable message without it.
-        if (e.detail) console.error("fatsecret IP restriction: rejected server outbound IP", e.detail);
-        return res.status(403).json({ success: false, message: "The nutrition provider rejected this server's IP address — add the server's outbound IPs to the FatSecret IP allowlist.", code: "PROVIDER_IP" });
-    }
-    console.error("nutrition provider error:", e.message);
-    return res.status(502).json({ success: false, message: unavailableMsg || "Nutrition search is temporarily unavailable.", code: e.code || "PROVIDER_ERROR" });
-}
-
 // ============================================================
-// PROVIDER PROXY — food search + details (secrets stay server-side)
+// CORPUS SEARCH — free text over the local USDA corpus.
 // ============================================================
 router.get("/search", auth, async (req, res) => {
     try {
@@ -205,75 +155,97 @@ router.get("/search", auth, async (req, res) => {
         if (!q) return res.status(400).json({ success: false, message: "Search query is required" });
         if (q.length > 120) return res.status(400).json({ success: false, message: "Search query is too long" });
 
-        const page = Math.max(Number(req.query.page) || 0, 0);
-        const result = await nutrition.searchFoods(q, { maxResults: 12, pageNumber: page });
-        res.json({ success: true, ...result });
-    } catch (e) {
-        mapProviderError(e, res);
-    }
-});
+        const coll = getColl();
+        const result = await resolver.resolveByText(coll, {
+            canonicalFoodKey: q,
+            observedBrand: null,
+            prepFacet: null,
+            modelCategory: null,
+            estimatedGrams: null,
+        });
 
-router.get("/food/:id", auth, async (req, res) => {
-    try {
-        const food = await nutrition.getFood(req.params.id);
-        res.json({ success: true, food });
-    } catch (e) {
-        if (e.code === "BAD_INPUT" || e.code === "NOT_FOUND") {
-            return res.status(400).json({ success: false, message: "Food not found" });
+        if (result.zeroHit) {
+            return res.json({ success: true, query: q, results: [], outcome: "miss" });
         }
-        mapProviderError(e, res, "Food details are temporarily unavailable.");
-    }
-});
-
-// ============================================================
-// PHOTO — provider abstraction. Honest unavailable state until a
-// Premier/vision provider is configured (never fabricates results).
-// ============================================================
-router.post("/analyze-photo", auth, async (req, res) => {
-    try {
-        if (!req.headers["content-type"] || !req.headers["content-type"].includes("multipart/form-data")) {
-            return res.status(400).json({ success: false, message: "Image upload expected", code: "BAD_INPUT" });
-        }
-        if (!imageRecognition.photoEnabled()) {
-            return res.status(501).json({
-                success: false,
-                message: "Photo analysis isn't available with the current nutrition provider configuration.",
-                code: "PHOTO_UNAVAILABLE"
-            });
-        }
-        return res.status(501).json({
-            success: false,
-            message: "Photo analysis isn't available with the current nutrition provider configuration.",
-            code: "PHOTO_UNAVAILABLE"
+        const scored = result.outcome.kind === "miss" ? [] : result.outcome.kind === "auto_accepted" ? [result.outcome.candidate] : result.outcome.candidates;
+        res.json({
+            success: true,
+            query: q,
+            outcome: result.outcome.kind,
+            ladderStep: result.ladderStep,
+            results: scored.slice(0, 12).map((c) => ({
+                foodId: c.foodId,
+                name: c.name,
+                brand: c.brand,
+                category: c.category,
+                cuisine: c.cuisine,
+                servingSizeG: c.servingSizeG,
+                energyKcal: c.energyKcal,
+                score: Math.round(c.score * 100) / 100,
+            })),
         });
     } catch (e) {
-        console.error("analyze-photo error:", e.message);
-        res.status(502).json({ success: false, message: "Photo analysis failed.", code: "PROVIDER_ERROR" });
+        console.error("nutrition search error:", e.message);
+        res.status(500).json({ success: false, message: "Food search failed. Please try again.", code: "SEARCH_ERROR" });
     }
 });
 
 // ============================================================
-// BARCODE — Premier-only upstream. Manual entry is the fallback that
-// keeps the tab functional: barcode digits are searched by name/brand.
+// FOOD DETAIL — per-100g snapshot + portion anchors for the editor.
 // ============================================================
-router.get("/barcode/:code", auth, async (req, res) => {
+router.get("/food/:id", auth, async (req, res) => {
     try {
-        const code = String(req.params.code || "").replace(/\D/g, "");
-        if (code.length < 6 || code.length > 14) {
-            return res.status(400).json({ success: false, message: "Invalid barcode" });
-        }
-        const food = await nutrition.lookupBarcode(code);
+        const food = await resolver.loadFood(getColl(), String(req.params.id || ""));
+        if (!food) return res.status(404).json({ success: false, message: "Food not found in the nutrition corpus" });
         res.json({ success: true, food });
     } catch (e) {
-        if (e.code === "PREMIER_REQUIRED") {
-            return res.status(501).json({
-                success: false,
-                message: "Barcode lookup requires a FatSecret Premier plan. Use Search, or enter the product name manually.",
-                code: "PREMIER_REQUIRED"
-            });
+        console.error("food detail error:", e.message);
+        res.status(500).json({ success: false, message: "Food details are temporarily unavailable." });
+    }
+});
+
+// ============================================================
+// PHOTO ANALYSIS — the deterministic pipeline over a vision payload.
+// The CLIENT sends only the image; a vision-provider call would produce the
+// payload server-side. No vision provider is configured yet, so this route
+// honestly reports unavailable and NEVER fabricates a payload.
+// ============================================================
+router.post("/analyze-photo", auth, async (req, res) => {
+    return res.status(501).json({
+        success: false,
+        message: "Photo analysis isn't available yet — no vision provider is configured on the server.",
+        code: "PHOTO_UNAVAILABLE",
+    });
+});
+
+// ============================================================
+// DETERMINISTIC PREVIEW — validate + analyze a payload WITHOUT logging.
+// Used by tests and by a future vision provider integration. Accepts a
+// full VisionPayload (the only thing an inference model may return).
+// ============================================================
+router.post("/analyze", auth, async (req, res) => {
+    try {
+        const payload = validateVisionPayload(req.body);
+        if (!payload.is_food) {
+            return res.status(400).json({ success: false, message: payload.refusal_reason || "Not a food photo", code: "NOT_FOOD" });
         }
-        console.error("barcode error:", e.message);
-        res.status(502).json({ success: false, message: "Barcode lookup failed.", code: "PROVIDER_ERROR" });
+        const priors = await priorsFor(req.userId);
+        const result = await engine.analyzePayload(getColl(), payload, { priors });
+        res.json({
+            success: true,
+            items: result.items.map((o) => ({ row: o.row, gramResult: { grams: o.gramResult.grams, pathway: o.gramResult.pathway, halfPct: o.gramResult.halfPct, rivalGrams: o.gramResult.rivalGrams || null } })),
+            totals: result.displayTotals,
+            rawTotals: result.totals,
+            band: result.band,
+            clampFlags: result.clampFlags,
+            questions: result.questions,
+        });
+    } catch (e) {
+        if (e instanceof ValidationError) {
+            return res.status(400).json({ success: false, message: e.message, code: "BAD_INPUT" });
+        }
+        console.error("analyze error:", e.message);
+        res.status(500).json({ success: false, message: "Analysis failed. Please try again." });
     }
 });
 
@@ -287,19 +259,98 @@ router.get("/meals", auth, async (req, res) => {
         const date = isValidDateKey(req.query.date) ? req.query.date : today;
         const meals = await Meal.find({ userId: req.userId, date }).sort({ createdAt: 1 });
 
-        const totals = mealTotals(meals.flatMap((m) => m.foods));
+        const day = dayTotals(meals.map((m) => m.toObject()));
         res.json({
             success: true,
             date,
             today,
-            meals: meals.map(withTotals),
-            totals
+            meals: meals.map(mealView),
+            totals: day.totals,
+            rawTotals: day.raw,
         });
     } catch (e) {
         console.error("meals load error:", e.message);
         res.status(500).json({ success: false, message: "Failed to load meals" });
     }
 });
+
+// Build a single stored ingredient row from a client request. Nutrition
+// numbers ALWAYS come from the corpus snapshot — the client supplies
+// foodId + grams only. Manual rows accept client numbers with explicit
+// clamping and the manual_custom origin (never silently merged).
+async function buildIngredientRow(raw) {
+    if (raw == null || typeof raw !== "object") return null;
+    const origin = String(raw.origin || "db_search");
+
+    if (origin === "manual_custom") {
+        const name = String(raw.displayName || "").trim().slice(0, 160);
+        if (!name) return null;
+        const snap = raw.nutrientSnapshot || {};
+        const kcal = Math.min(Math.max(Number(snap.kcal) || 0, 0), 920);
+        // Atwater plausibility on manual rows: reject obviously fabricated macros.
+        let p = Math.min(Math.max(Number(snap.protein_g) || 0, 0), 100);
+        let c = Math.min(Math.max(Number(snap.carbs_g) || 0, 0), 100);
+        let f = Math.min(Math.max(Number(snap.fat_g) || 0, 0), 100);
+        const macroKcal = totals.reconcileFromMacros(p, c, f);
+        if (kcal > 0 && macroKcal > kcal * 1.6 + 60) {
+            p = 0; c = 0; f = 0;
+        }
+        return {
+            id: `man-${Math.random().toString(36).slice(2, 10)}`,
+            displayName: name,
+            sourceFoodId: null,
+            grams: Math.min(Math.max(Number(raw.grams) || 100, 1), 5000),
+            nutrientSnapshot: {
+                kcal,
+                protein_g: p,
+                fat_g: f,
+                carbs_g: c,
+                fiber_g: Number.isFinite(Number(snap.fiber_g)) ? Math.min(Math.max(Number(snap.fiber_g), 0), 100) : null,
+                sugar_g: Number.isFinite(Number(snap.sugar_g)) ? Math.min(Math.max(Number(snap.sugar_g), 0), 100) : null,
+                sodium_mg: Number.isFinite(Number(snap.sodium_mg)) ? Math.min(Math.max(Number(snap.sodium_mg), 0), 5000) : null,
+            },
+            origin: "manual_custom",
+            sourceUrl: null,
+            gramPathway: "user_edited",
+            bandHalfPct: 0,
+            isEstimate: false,
+            assumptions: [],
+            macrosUserEdited: false,
+            corrections: [],
+        };
+    }
+
+    // db_search / vision_model / barcode / label_ocr: resolve from the corpus.
+    const foodId = String(raw.sourceFoodId || "").slice(0, 40);
+    if (!foodId) return null;
+    const food = await resolver.loadFood(getColl(), foodId);
+    if (!food || food.per100g.kcal == null) return null;
+    const grams = Math.min(Math.max(Number(raw.grams) || (food.servingSizeG || 100), 1), 5000);
+    const p = food.per100g;
+    return {
+        id: `fdc-${food.foodId}-${Math.random().toString(36).slice(2, 8)}`,
+        displayName: food.brand ? `${food.brand} ${food.name}`.slice(0, 160) : food.name,
+        sourceFoodId: food.foodId,
+        grams,
+        nutrientSnapshot: {
+            kcal: p.kcal,
+            protein_g: p.protein_g,
+            fat_g: p.fat_g,
+            carbs_g: p.carbs_g,
+            fiber_g: p.fiber_g,
+            sugar_g: p.sugar_g,
+            sodium_mg: p.sodium_mg,
+        },
+        origin: origin === "vision_model" ? "vision_model" : "db_search",
+        sourceUrl: null,
+        gramPathway: raw.gramPathway === "discrete_count" ? "discrete_count" : "user_edited",
+        bandHalfPct: Number.isFinite(Number(raw.bandHalfPct)) ? Math.min(Math.max(Number(raw.bandHalfPct), 0), 0.8) : 0,
+        isEstimate: false,
+        assumptions: [],
+        macrosUserEdited: false,
+        corrections: [],
+    };
+}
 
 router.post("/meals", auth, async (req, res) => {
     try {
@@ -308,27 +359,261 @@ router.post("/meals", auth, async (req, res) => {
         if (!isValidDateKey(date)) return res.status(400).json({ success: false, message: "Invalid date" });
 
         const mealType = MEAL_TYPES.includes(req.body.mealType) ? req.body.mealType : "snack";
-        const source = SOURCES.includes(req.body.source) ? req.body.source : "manual";
+        const source = MEAL_SOURCES.includes(req.body.source) ? req.body.source : "db_search";
 
-        if (!Array.isArray(req.body.foods) || req.body.foods.length === 0) {
+        if (!Array.isArray(req.body.ingredients) || req.body.ingredients.length === 0) {
             return res.status(400).json({ success: false, message: "Add at least one food" });
         }
-        if (req.body.foods.length > 30) {
+        if (req.body.ingredients.length > 30) {
             return res.status(400).json({ success: false, message: "Too many foods in one meal (max 30)" });
         }
-        const foods = await resolveFoods(req.body.foods);
-        if (foods.length === 0) {
-            return res.status(400).json({ success: false, message: "Food entries are missing names" });
+
+        const rows = [];
+        for (const raw of req.body.ingredients) {
+            const row = await buildIngredientRow(raw);
+            if (!row) {
+                return res.status(400).json({ success: false, message: `Could not resolve "${String((raw && raw.displayName) || "a food").slice(0, 60)}" against the nutrition corpus — search for it again or enter it manually.`, code: "UNRESOLVED_FOOD" });
+            }
+            rows.push(row);
         }
 
-        const meal = await Meal.create({ userId: req.userId, date, mealType, source, notes: String(req.body.notes || "").slice(0, 500), foods });
-        res.status(201).json({ success: true, meal: withTotals(meal) });
+        const portion = Number(req.body.portionEatenFraction);
+        const meal = await Meal.create({
+            userId: req.userId,
+            date,
+            mealType,
+            source,
+            notes: String(req.body.notes || "").slice(0, 500),
+            portionEatenFraction: Number.isFinite(portion) ? Math.min(Math.max(portion, 0.05), 1) : 1,
+            ingredients: rows,
+        });
+        res.status(201).json({ success: true, meal: mealView(meal) });
     } catch (e) {
-        if (e.status === 400) return res.status(400).json({ success: false, message: e.message, code: e.code || "BAD_INPUT" });
-        if (e.status === 403) return res.status(403).json({ success: false, message: e.message, code: e.code || "PROVIDER_IP" });
-        if (e.status === 502) return res.status(502).json({ success: false, message: e.message, code: "PROVIDER_DOWN" });
         console.error("meal create error:", e.message);
         res.status(500).json({ success: false, message: "Failed to save meal" });
+    }
+});
+
+// CORRECTIONS — deterministic edits only. Each endpoint changes exactly one
+// assumption and recomputes arithmetic; no model call anywhere.
+
+// Change grams on one row (the ONE quantity the user edits directly).
+router.patch("/meals/:id/rows/:rowId/grams", auth, async (req, res) => {
+    try {
+        if (!validIdOr400(req.params.id)) return res.status(400).json({ success: false, message: "Invalid id" });
+        const meal = await Meal.findOne({ _id: req.params.id, userId: req.userId });
+        if (!meal) return res.status(404).json({ success: false, message: "Meal not found" });
+        const row = meal.ingredients.find((r) => r.id === req.params.rowId);
+        if (!row) return res.status(404).json({ success: false, message: "Ingredient not found" });
+
+        const grams = Number(req.body && req.body.grams);
+        if (!Number.isFinite(grams) || grams < 1 || grams > 5000) {
+            return res.status(400).json({ success: false, message: "grams must be 1–5000" });
+        }
+
+        // Feed the personal prior: ratio = final/model estimate.
+        const conceptKey = row.sourceFoodId ? `fdc:${row.sourceFoodId}` : canonicalConceptKey(row.displayName, null);
+        const est = row.grams;
+        if (row.gramPathway !== "user_edited" && est > 0 && grams !== est) {
+            const prior = await MealPrior.findOne({ userId: req.userId, foodConceptKey: conceptKey });
+            const updated = updatePrior(
+                prior
+                    ? {
+                        foodConceptKey: conceptKey,
+                        ewmaRatio: prior.ewmaRatio,
+                        ratioVariance: prior.ratioVariance,
+                        sampleCount: prior.sampleCount,
+                        medianGrams: prior.medianGrams,
+                        lastCorrectedAt: prior.lastCorrectedAt ? prior.lastCorrectedAt.getTime() : Date.now(),
+                    }
+                    : null,
+                conceptKey,
+                est,
+                grams,
+                Date.now(),
+            );
+            await MealPrior.updateOne(
+                { userId: req.userId, foodConceptKey: conceptKey },
+                {
+                    $set: {
+                        ewmaRatio: updated.ewmaRatio,
+                        ratioVariance: updated.ratioVariance,
+                        sampleCount: updated.sampleCount,
+                        medianGrams: updated.medianGrams,
+                        lastCorrectedAt: new Date(updated.lastCorrectedAt),
+                    },
+                },
+                { upsert: true },
+            );
+        }
+
+        row.corrections.push({ at: new Date(), field: "grams", from: row.grams, to: grams });
+        row.grams = grams;
+        // gramPathway becomes user_edited: ground truth for this meal.
+        row.gramPathway = "user_edited";
+        row.bandHalfPct = 0;
+        await meal.save();
+        res.json({ success: true, meal: mealView(meal) });
+    } catch (e) {
+        console.error("row grams update error:", e.message);
+        res.status(500).json({ success: false, message: "Failed to update portion" });
+    }
+});
+
+// Set the whole-meal portionEatenFraction ("did you eat all of it?").
+router.patch("/meals/:id/portion", auth, async (req, res) => {
+    try {
+        if (!validIdOr400(req.params.id)) return res.status(400).json({ success: false, message: "Invalid id" });
+        const meal = await Meal.findOne({ _id: req.params.id, userId: req.userId });
+        if (!meal) return res.status(404).json({ success: false, message: "Meal not found" });
+        const p = Number(req.body && req.body.portionEatenFraction);
+        if (!Number.isFinite(p) || p < 0.05 || p > 1) {
+            return res.status(400).json({ success: false, message: "portionEatenFraction must be 0.05–1" });
+        }
+        meal.portionEatenFraction = p;
+        await meal.save();
+        res.json({ success: true, meal: mealView(meal) });
+    } catch (e) {
+        console.error("portion update error:", e.message);
+        res.status(500).json({ success: false, message: "Failed to update portion eaten" });
+    }
+});
+
+// Apply a question-bank answer (cooking oil etc.) — pushes a synthetic
+// ingredient row (origin assumption_filler) and recomputes. The per-100g
+// values for the filler rows come from the corpus (butter/oil rows), never
+// from the client.
+const OIL_ANSWER_MAP = {
+    none: null, // remove filler if present
+    little: { search: "vegetable oil", grams: 14 }, // ~1 tbsp
+    lots: { search: "vegetable oil", grams: 28 }, // ~2 tbsp
+};
+
+router.patch("/meals/:id/rows/:rowId/assumption", auth, async (req, res) => {
+    try {
+        if (!validIdOr400(req.params.id)) return res.status(400).json({ success: false, message: "Invalid id" });
+        const meal = await Meal.findOne({ _id: req.params.id, userId: req.userId });
+        if (!meal) return res.status(404).json({ success: false, message: "Meal not found" });
+        const row = meal.ingredients.find((r) => r.id === req.params.rowId);
+        if (!row) return res.status(404).json({ success: false, message: "Ingredient not found" });
+
+        const attribute = String((req.body && req.body.attribute) || "").slice(0, 60);
+        const value = String((req.body && req.body.value) || "").slice(0, 60);
+        if (!attribute || !value) return res.status(400).json({ success: false, message: "attribute and value required" });
+
+        if (attribute === "cooking_oil") {
+            // Remove any existing oil filler row for this row.
+            meal.ingredients = meal.ingredients.filter((r) => !(r.origin === "assumption_filler" && r.assumptions.some((a) => a.type === `oil_for:${row.id}`)));
+            const spec = OIL_ANSWER_MAP[value];
+            if (spec) {
+                const hit = await resolver.resolveByText(getColl(), { canonicalFoodKey: spec.search, observedBrand: null, prepFacet: null, modelCategory: null, estimatedGrams: spec.grams });
+                const cand = hit.outcome.kind === "auto_accepted" ? hit.outcome.candidate : (hit.outcome.candidates || [])[0];
+                const food = cand ? await resolver.loadFood(getColl(), cand.foodId) : null;
+                if (food && food.per100g.kcal != null) {
+                    meal.ingredients.push({
+                        id: `oil-${Math.random().toString(36).slice(2, 10)}`,
+                        displayName: "Cooking oil (assumed)",
+                        sourceFoodId: food.foodId,
+                        grams: spec.grams,
+                        nutrientSnapshot: {
+                            kcal: food.per100g.kcal,
+                            protein_g: food.per100g.protein_g,
+                            fat_g: food.per100g.fat_g,
+                            carbs_g: food.per100g.carbs_g,
+                            fiber_g: food.per100g.fiber_g,
+                            sugar_g: food.per100g.sugar_g,
+                            sodium_mg: food.per100g.sodium_mg,
+                        },
+                        origin: "assumption_filler",
+                        sourceUrl: null,
+                        gramPathway: "user_edited",
+                        bandHalfPct: 0.2,
+                        isEstimate: true,
+                        assumptions: [{ type: `oil_for:${row.id}`, userConfirmed: true }],
+                        macrosUserEdited: false,
+                        corrections: [],
+                    });
+                }
+            }
+            row.corrections.push({ at: new Date(), field: "cooking_oil", from: null, to: null });
+        }
+
+        // Confirm the assumption on the row.
+        const tag = row.assumptions.find((a) => a.type === attribute);
+        if (tag) tag.userConfirmed = true;
+        else row.assumptions.push({ type: attribute, userConfirmed: true });
+
+        // Answer memory — a frequency table, not ML (repair §8.7).
+        const conceptKey = row.sourceFoodId ? `fdc:${row.sourceFoodId}` : canonicalConceptKey(row.displayName, null);
+        const mem = await MealAnswerMemory.findOne({ userId: req.userId, foodConceptKey: conceptKey, attribute });
+        const updated = repair.recordAnswer(mem ? { foodConceptKey: conceptKey, attribute, value: mem.value, answerCount: mem.answerCount } : null, conceptKey, attribute, value);
+        await MealAnswerMemory.updateOne(
+            { userId: req.userId, foodConceptKey: conceptKey, attribute },
+            { $set: { value: updated.value, answerCount: updated.answerCount } },
+            { upsert: true },
+        );
+
+        await meal.save();
+        res.json({ success: true, meal: mealView(meal) });
+    } catch (e) {
+        console.error("assumption apply error:", e.message);
+        res.status(500).json({ success: false, message: "Failed to apply correction" });
+    }
+});
+
+// Swap a row's identity (correction: "this was actually X") — new snapshot
+// copied from the corpus row, grams preserved.
+router.patch("/meals/:id/rows/:rowId/swap", auth, async (req, res) => {
+    try {
+        if (!validIdOr400(req.params.id)) return res.status(400).json({ success: false, message: "Invalid id" });
+        const meal = await Meal.findOne({ _id: req.params.id, userId: req.userId });
+        if (!meal) return res.status(404).json({ success: false, message: "Meal not found" });
+        const row = meal.ingredients.find((r) => r.id === req.params.rowId);
+        if (!row) return res.status(404).json({ success: false, message: "Ingredient not found" });
+
+        const foodId = String((req.body && req.body.sourceFoodId) || "").slice(0, 40);
+        const food = await resolver.loadFood(getColl(), foodId);
+        if (!food || food.per100g.kcal == null) return res.status(400).json({ success: false, message: "Replacement food not found in the corpus" });
+
+        row.sourceFoodId = food.foodId;
+        row.displayName = food.brand ? `${food.brand} ${food.name}`.slice(0, 160) : food.name;
+        row.nutrientSnapshot = {
+            kcal: food.per100g.kcal,
+            protein_g: food.per100g.protein_g,
+            fat_g: food.per100g.fat_g,
+            carbs_g: food.per100g.carbs_g,
+            fiber_g: food.per100g.fiber_g,
+            sugar_g: food.per100g.sugar_g,
+            sodium_mg: food.per100g.sodium_mg,
+        };
+        row.isEstimate = false;
+        row.corrections.push({ at: new Date(), field: "swap", from: null, to: null });
+        await meal.save();
+        res.json({ success: true, meal: mealView(meal) });
+    } catch (e) {
+        console.error("row swap error:", e.message);
+        res.status(500).json({ success: false, message: "Failed to swap food" });
+    }
+});
+
+// Remove one ingredient row (correction: "there was no cheese").
+router.delete("/meals/:id/rows/:rowId", auth, async (req, res) => {
+    try {
+        if (!validIdOr400(req.params.id)) return res.status(400).json({ success: false, message: "Invalid id" });
+        const meal = await Meal.findOne({ _id: req.params.id, userId: req.userId });
+        if (!meal) return res.status(404).json({ success: false, message: "Meal not found" });
+        const before = meal.ingredients.length;
+        meal.ingredients = meal.ingredients.filter((r) => r.id !== req.params.rowId);
+        if (meal.ingredients.length === before) return res.status(404).json({ success: false, message: "Ingredient not found" });
+        if (meal.ingredients.length === 0) {
+            await meal.deleteOne();
+            return res.json({ success: true, deleted: true, message: "Meal had no ingredients left and was removed" });
+        }
+        await meal.save();
+        res.json({ success: true, meal: mealView(meal) });
+    } catch (e) {
+        console.error("row delete error:", e.message);
+        res.status(500).json({ success: false, message: "Failed to remove ingredient" });
     }
 });
 
@@ -348,25 +633,27 @@ router.put("/meals/:id", auth, async (req, res) => {
         }
         if (req.body.notes !== undefined) meal.notes = String(req.body.notes || "").slice(0, 500);
 
-        if (Array.isArray(req.body.foods)) {
-            if (req.body.foods.length === 0) return res.status(400).json({ success: false, message: "A meal needs at least one food" });
-            if (req.body.foods.length > 30) return res.status(400).json({ success: false, message: "Too many foods in one meal (max 30)" });
-            const foods = await resolveFoods(req.body.foods);
-            if (foods.length === 0) return res.status(400).json({ success: false, message: "Food entries are missing names" });
-            meal.foods = foods;
+        if (Array.isArray(req.body.ingredients)) {
+            if (req.body.ingredients.length === 0) return res.status(400).json({ success: false, message: "A meal needs at least one food" });
+            if (req.body.ingredients.length > 30) return res.status(400).json({ success: false, message: "Too many foods in one meal (max 30)" });
+            const rows = [];
+            for (const raw of req.body.ingredients) {
+                const row = await buildIngredientRow(raw);
+                if (!row) return res.status(400).json({ success: false, message: "Could not resolve an ingredient against the nutrition corpus", code: "UNRESOLVED_FOOD" });
+                rows.push(row);
+            }
+            meal.ingredients = rows;
         }
 
         await meal.save();
-        res.json({ success: true, meal: withTotals(meal) });
+        res.json({ success: true, meal: mealView(meal) });
     } catch (e) {
-        if (e.status === 400) return res.status(400).json({ success: false, message: e.message, code: e.code || "BAD_INPUT" });
-        if (e.status === 403) return res.status(403).json({ success: false, message: e.message, code: e.code || "PROVIDER_IP" });
-        if (e.status === 502) return res.status(502).json({ success: false, message: e.message, code: "PROVIDER_DOWN" });
         console.error("meal update error:", e.message);
         res.status(500).json({ success: false, message: "Failed to update meal" });
     }
 });
 
+// Delete a whole meal (logged entry).
 router.delete("/meals/:id", auth, async (req, res) => {
     try {
         if (!validIdOr400(req.params.id)) return res.status(400).json({ success: false, message: "Invalid id" });
@@ -380,24 +667,20 @@ router.delete("/meals/:id", auth, async (req, res) => {
     }
 });
 
-// Daily totals across a date range (recent history view)
+// Daily totals across a date range (recent history view).
 router.get("/summary", auth, async (req, res) => {
     try {
         const tz = await userTz(req.userId);
         const today = todayKeyFor(tz);
         const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
         const from = req.query.from && isValidDateKey(req.query.from) ? req.query.from : null;
-        const to = from
-            ? (req.query.to && isValidDateKey(req.query.to) ? req.query.to : today)
-            : today;
+        const to = from ? (req.query.to && isValidDateKey(req.query.to) ? req.query.to : today) : today;
 
-        // compute the window without importing client date helpers:
-        const start = from || new Date(new Date(to + "T12:00:00Z").getTime() - (days - 1) * 86400000)
-            .toISOString().slice(0, 10);
+        const start = from || new Date(new Date(to + "T12:00:00Z").getTime() - (days - 1) * 86400000).toISOString().slice(0, 10);
 
         const meals = await Meal.find({ userId: req.userId, date: { $gte: start, $lte: to } })
             .sort({ date: 1 })
-            .limit(400); // bounded: ≤30 days × ≤~13 meals/day
+            .limit(400);
 
         const byDate = {};
         for (const m of meals) {
@@ -411,7 +694,8 @@ router.get("/summary", auth, async (req, res) => {
         let i = 0;
         while (cursor <= to && i < guard) {
             const dayMeals = byDate[cursor] || [];
-            out.push({ date: cursor, ...mealTotals(dayMeals.flatMap((m) => m.foods)), mealCount: dayMeals.length });
+            const day = dayTotals(dayMeals.map((m) => m.toObject()));
+            out.push({ date: cursor, totals: day.totals, mealCount: dayMeals.length });
             cursor = new Date(new Date(cursor + "T12:00:00Z").getTime() + 86400000).toISOString().slice(0, 10);
             i += 1;
         }

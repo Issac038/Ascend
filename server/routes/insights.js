@@ -21,7 +21,8 @@ const JournalEntry = require("../models/JournalEntry");
 const ProgressSnapshot = require("../models/ProgressSnapshot");
 const UserAchievement = require("../models/Achievement");
 const Notification = require("../models/Notification");
-const Meal = require("../models/Meal");
+const { Meal, MealPrior, MealAnswerMemory } = require("../models/Meal");
+const { Workout, WeeklyPlan, WorkoutSession } = require("../models/Gym");
 
 const router = express.Router();
 
@@ -548,7 +549,7 @@ router.patch("/settings", auth, async (req, res) => {
 // ============================================================
 router.get("/export", auth, async (req, res) => {
     try {
-        const [user, settings, areas, habits, completions, tasks, goals, journals, snapshots, achievements, meals] = await Promise.all([
+        const [user, settings, areas, habits, completions, tasks, goals, journals, snapshots, achievements, meals, workouts, gymPlan, gymSessions] = await Promise.all([
             User.findById(req.userId).select("-password -__v"),
             Settings.find({ userId: req.userId }).select("-__v"),
             Area.find({ userId: req.userId }).select("-__v"),
@@ -559,7 +560,10 @@ router.get("/export", auth, async (req, res) => {
             JournalEntry.find({ userId: req.userId }).select("-__v"),
             ProgressSnapshot.find({ userId: req.userId }).select("-__v"),
             UserAchievement.find({ userId: req.userId }).select("-__v"),
-            Meal.find({ userId: req.userId }).select("-__v").limit(2000)
+            Meal.find({ userId: req.userId }).select("-__v").limit(2000),
+            Workout.find({ userId: req.userId }).select("-__v"),
+            WeeklyPlan.find({ userId: req.userId }).select("-__v"),
+            WorkoutSession.find({ userId: req.userId }).select("-__v").limit(2000)
         ]);
 
         res.setHeader("Content-Type", "application/json");
@@ -577,7 +581,10 @@ router.get("/export", auth, async (req, res) => {
             journals,
             snapshots,
             achievements,
-            meals
+            meals,
+            workouts,
+            gymPlan,
+            gymSessions
         });
     } catch (e) {
         res.status(500).json({ success: false, message: "Export failed" });
@@ -599,7 +606,12 @@ router.post("/reset", auth, async (req, res) => {
             ProgressSnapshot.deleteMany({ userId: req.userId }),
             UserAchievement.deleteMany({ userId: req.userId }),
             Notification.deleteMany({ userId: req.userId }),
-            Meal.deleteMany({ userId: req.userId })
+            Meal.deleteMany({ userId: req.userId }),
+            MealPrior.deleteMany({ userId: req.userId }),
+            MealAnswerMemory.deleteMany({ userId: req.userId }),
+            Workout.deleteMany({ userId: req.userId }),
+            WeeklyPlan.deleteMany({ userId: req.userId }),
+            WorkoutSession.deleteMany({ userId: req.userId })
         ]);
         await User.updateOne({ _id: req.userId }, { $set: { xp: 0, onboarded: false } });
         res.json({ success: true, message: "All progress cleared. Fresh start." });
@@ -627,7 +639,12 @@ router.post("/delete-account", auth, async (req, res) => {
             Notification.deleteMany({ userId: uid }),
             Settings.deleteMany({ userId: uid }),
             Area.deleteMany({ userId: uid }),
-            Meal.deleteMany({ userId: uid })
+            Meal.deleteMany({ userId: uid }),
+            MealPrior.deleteMany({ userId: uid }),
+            MealAnswerMemory.deleteMany({ userId: uid }),
+            Workout.deleteMany({ userId: uid }),
+            WeeklyPlan.deleteMany({ userId: uid }),
+            WorkoutSession.deleteMany({ userId: uid })
         ]);
         await User.findByIdAndDelete(uid);
         res.clearCookie("token");

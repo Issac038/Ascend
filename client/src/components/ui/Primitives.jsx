@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { X, AlertTriangle } from "lucide-react";
 
 /* ---------------- Logo ---------------- */
@@ -42,7 +43,10 @@ export function Modal({ open, onClose, title, subtitle, children, actions, large
 
     if (!open) return null;
 
-    return (
+    // Portal to document.body: pages animated with .page-fade keep a
+    // persistent transform, which would otherwise trap position:fixed
+    // children (the mobile bottom-sheet) inside the page container.
+    return createPortal(
         <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
             <div className={`modal${large ? " large" : ""}`} role="dialog" aria-modal="true" aria-label={title} ref={ref}>
                 <div className="modal-head">
@@ -57,7 +61,8 @@ export function Modal({ open, onClose, title, subtitle, children, actions, large
                 <div className="modal-body">{children}</div>
                 {actions && <div className="modal-actions">{actions}</div>}
             </div>
-        </div>
+        </div>,
+        document.body
     );
 }
 

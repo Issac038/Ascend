@@ -9,9 +9,11 @@ export default function Dashboard() {
     const { user, dash, dashError, reloadDashboard, toast } = useStore();
     const [busyHabit, setBusyHabit] = useState(null);
     const [review, setReview] = useState(null);
+    const [gymToday, setGymToday] = useState(null);
 
     useEffect(() => {
         api.get("/review/weekly").then((r) => setReview(r.data)).catch(() => {});
+        api.get("/gym/today").then((r) => setGymToday(r.data)).catch(() => {});
     }, []);
 
     if (dashError) {
@@ -118,6 +120,42 @@ export default function Dashboard() {
                     <span className="stat-sub">{remaining > 0 ? `${remaining} actions remaining` : "All clear for today"}</span>
                 </div>
             </div>
+
+            {gymToday && !gymToday.restDay && gymToday.workout && (
+                <div className="section">
+                    <div className="card gym-dash-card">
+                        <div className="row between" style={{ alignItems: "center" }}>
+                            <div style={{ minWidth: 0 }}>
+                                <p className="hint" style={{ margin: 0 }}>TODAY'S WORKOUT</p>
+                                <h3 style={{ margin: "2px 0 0", overflowWrap: "anywhere" }}>{gymToday.session?.workoutName || gymToday.workout.name}</h3>
+                            </div>
+                            <Link to="/gym" className="btn primary small" style={{ flexShrink: 0 }}>
+                                {gymToday.session?.completed ? "View workout" : gymToday.progress?.done > 0 ? "Continue workout" : "Start workout"}
+                            </Link>
+                        </div>
+                        <div style={{ marginTop: 10 }}>
+                            <ProgressBar value={gymToday.progress?.pct || 0} thin />
+                            <div className="row between hint" style={{ marginTop: 5 }}>
+                                <span>{gymToday.progress?.done || 0} / {gymToday.progress?.total || 0} exercises</span>
+                                <span className="mono-num">{gymToday.progress?.pct || 0}%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {gymToday && gymToday.restDay && (
+                <div className="section">
+                    <div className="card gym-dash-card">
+                        <div className="row between" style={{ alignItems: "center" }}>
+                            <div>
+                                <p className="hint" style={{ margin: 0 }}>TODAY</p>
+                                <h3 style={{ margin: "2px 0 0" }}>Rest Day</h3>
+                            </div>
+                            <Link to="/gym" className="btn ghost small" style={{ flexShrink: 0 }}>View weekly plan</Link>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="grid cols-2 section">
                 {/* trend */}

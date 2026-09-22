@@ -6,9 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node test/scoring.test.js && node test/nutrition.test.js && node test/run-tests.js && node test/nutrition-api.test.js",
+    "test": "node test/scoring.test.js && node test/nutrition-engine.test.js && node test/run-tests.js && node test/nutrition-api.test.js && node test/gym.test.js",
     "test:scoring": "node test/scoring.test.js",
-    "test:nutrition": "node test/nutrition.test.js",
+    "test:nutrition": "node test/nutrition-engine.test.js",
     "test:nutrition-api": "node test/nutrition-api.test.js",
     "test:api": "node test/run-tests.js"
   },
