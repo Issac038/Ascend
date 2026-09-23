@@ -23,23 +23,39 @@ export function Logo({ size = 28 }) {
 /* ---------------- Modal ---------------- */
 export function Modal({ open, onClose, title, subtitle, children, actions, large = false }) {
     const ref = useRef(null);
+    const onCloseRef = useRef(onClose);
+
+    // Latest-ref pattern: consumers pass inline `onClose={() => setX(false)}`
+    // arrows, which change identity on EVERY parent render — including every
+    // keystroke inside the modal. `onClose` in the open-effect dependency list
+    // re-ran that effect per keystroke, re-arming the focus timer, which then
+    // refocused the first match in DOM order (the header ✕ close button) —
+    // stealing focus from the text input. That was the app-wide "keyboard
+    // closes after one character" bug. Keeping the callback in a ref makes the
+    // open-effect depend on `open` alone, so it runs exactly once per open.
+    useEffect(() => {
+        onCloseRef.current = onClose;
+    });
 
     useEffect(() => {
         if (!open) return undefined;
         const onKey = (e) => {
-            if (e.key === "Escape") onClose();
+            if (e.key === "Escape") onCloseRef.current();
         };
         document.addEventListener("keydown", onKey);
         document.body.style.overflow = "hidden";
+        // Focus the first FIELD once on open. Buttons are deliberately
+        // excluded: the ✕ close button must never take focus from the form
+        // (and buttons can't be typed into anyway).
         const t = setTimeout(() => {
-            ref.current?.querySelector("input, textarea, select, button")?.focus();
+            ref.current?.querySelector("input, textarea, select")?.focus();
         }, 60);
         return () => {
             document.removeEventListener("keydown", onKey);
             document.body.style.overflow = "";
             clearTimeout(t);
         };
-    }, [open, onClose]);
+    }, [open]);
 
     if (!open) return null;
 

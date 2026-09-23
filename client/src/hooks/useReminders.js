@@ -52,7 +52,7 @@ export default function useReminders(settings, toast, user) {
                 fire("daily", "Time to ascend — check in with today's habits.", true);
             }
             if (n.eveningReflection && sameMinute("20:00", now)) {
-                fire("evening", "Evening reflection — how was your day?", false);
+                fire("evening", "How did you do today? Finish what remains before the day ends.", false);
             }
             if (n.weeklyReview && now.getDay() === 1 && sameMinute("09:00", now)) {
                 fire("weekly", "New week. Set the tone — review last week in Analytics.", false);

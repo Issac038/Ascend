@@ -116,6 +116,28 @@ export default function Profile() {
                 </>
             )}
 
+            {dash?.goals?.length > 0 && (
+                <div className="section">
+                    <div className="section-title">
+                        <h2>My goals</h2>
+                        <span className="hint">{dash.goals.length} active</span>
+                    </div>
+                    <div className="grid" style={{ gap: 10 }}>
+                        {dash.goals.map((g) => (
+                            <div className="card plain profile-goal-row" key={g._id}>
+                                <div className="row between" style={{ gap: 10, marginBottom: 6 }}>
+                                    <span className="profile-goal-title">{g.title}</span>
+                                    <span className="mono-num" style={{ fontWeight: 800, flexShrink: 0 }}>
+                                        {g.progress ?? 0}%
+                                    </span>
+                                </div>
+                                <ProgressBar value={g.progress ?? 0} thin />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             <Modal
                 open={editOpen}
                 onClose={() => setEditOpen(false)}

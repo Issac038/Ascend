@@ -1,6 +1,7 @@
 const express = require("express");
 
 const auth = require("../middleware/auth");
+const { requireJournalUnlock } = require("./journalSecurity");
 const { todayKey, todayKeyFor, addDays, startOfWeek, eachDay, diffDays, dayOfWeek, startOfMonth, endOfMonth, isValidDateKey } = require("../utils/date");
 const { isHabitScheduledOn, computeDayScore, computeStreak, xpForDayScore } = require("../utils/scoring");
 const { ACHIEVEMENTS, buildContext } = require("../utils/achievements");
@@ -608,7 +609,11 @@ router.delete("/goals/:id", auth, async (req, res) => {
 // ============================================================
 // JOURNAL
 // ============================================================
-router.get("/journal", auth, async (req, res) => {
+// All journal content endpoints sit behind the optional PIN gate:
+// when the user has configured a Journal PIN, reads AND writes require a
+// valid unlock token (x-journal-unlock header) — a locked journal can
+// neither be read nor overwritten. See routes/journalSecurity.js.
+router.get("/journal", auth, requireJournalUnlock, async (req, res) => {
     try {
         const limit = Math.min(Number(req.query.limit) || 50, 200);
         const entries = await JournalEntry.find({ userId: req.userId }).sort({ date: -1 }).limit(limit);
@@ -618,7 +623,7 @@ router.get("/journal", auth, async (req, res) => {
     }
 });
 
-router.get("/journal/:date", auth, async (req, res) => {
+router.get("/journal/:date", auth, requireJournalUnlock, async (req, res) => {
     try {
         const entry = await JournalEntry.findOne({ userId: req.userId, date: req.params.date });
         res.json({ success: true, entry: entry || null });
@@ -627,7 +632,7 @@ router.get("/journal/:date", auth, async (req, res) => {
     }
 });
 
-router.put("/journal/:date", auth, async (req, res) => {
+router.put("/journal/:date", auth, requireJournalUnlock, async (req, res) => {
     try {
         const date = req.params.date;
         if (!isValidDateKey(date)) {
@@ -674,7 +679,7 @@ router.put("/journal/:date", auth, async (req, res) => {
     }
 });
 
-router.delete("/journal/:date", auth, async (req, res) => {
+router.delete("/journal/:date", auth, requireJournalUnlock, async (req, res) => {
     try {
         if (!isValidDateKey(req.params.date)) {
             return res.status(400).json({ success: false, message: "Invalid date" });
@@ -769,6 +774,15 @@ router.get("/dashboard", auth, async (req, res) => {
             trend,
             areas: areaProgress,
             activeGoals: goals.length,
+            // Per-goal progress for the Profile page (same authoritative
+            // calculator as GET /goals — one source of truth).
+            goals: goals.map((g) => ({
+                _id: g._id,
+                title: g.title,
+                area: g.area,
+                status: g.status,
+                progress: progressMap.get(g._id.toString()) || 0
+            })),
             level
         });
     } catch (e) {

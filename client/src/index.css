@@ -1697,3 +1697,92 @@ body.larger-text { font-size: 16px; }
     margin-bottom: 8px;
 }
 .danger-text { color: var(--danger); }
+
+/* ============================================================
+   V1.1.0 — bug fix + polish pass
+   ============================================================ */
+
+/* Gym workout editor: bare inputs must use the shared Ascend field
+   styling (dark surface, light text, muted placeholder). Previously
+   they had no class and rendered as browser-default white fields. */
+.modal .modal-body input:not([type="checkbox"]):not([type="radio"]),
+.modal .modal-body select,
+.modal .modal-body textarea {
+    width: 100%;
+    padding: 11px 13px;
+    min-height: 42px;
+    background: #0d0d0d;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s, background 0.15s;
+}
+.modal .modal-body input:focus,
+.modal .modal-body select:focus,
+.modal .modal-body textarea:focus { border-color: #5a5a5a; background: #101010; }
+.modal .modal-body input::placeholder,
+.modal .modal-body textarea::placeholder { color: var(--text-4); }
+.modal .modal-body select {
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, #666 50%), linear-gradient(135deg, #666 50%, transparent 50%);
+    background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 34px;
+}
+.modal .modal-body input[type="number"] { font-variant-numeric: tabular-nums; }
+/* keep number spinners from colliding with the arrow on iOS */
+.modal .modal-body input[type="number"] { min-height: 42px; }
+
+/* Dashboard: reminder text beside the Ascend score ring */
+.dash-score-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; justify-content: flex-end; }
+.dash-score-reminder {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-3);
+    max-width: 130px;
+    line-height: 1.45;
+    letter-spacing: 0.02em;
+    border-left: 2px solid var(--line);
+    padding-left: 12px;
+    margin: 0;
+}
+@media (max-width: 720px) {
+    .dash-score-wrap { justify-content: flex-start; }
+    .dash-score-reminder { max-width: none; flex: 1 1 120px; }
+}
+
+/* Journal lock screen + PIN inputs */
+.journal-lock-icon {
+    width: 52px; height: 52px;
+    margin: 0 auto;
+    display: grid; place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    color: var(--text-2);
+}
+.journal-pin-input {
+    letter-spacing: 0.6em;
+    text-align: center;
+    font-size: 20px !important;
+    font-weight: 700;
+}
+.journal-note {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* Week dots: future days in the current week are visibly "upcoming" */
+.week-dots .dot.future { opacity: 0.35; }
+
+/* Profile goal progress rows */
+.profile-goal-row { padding: 13px 16px; }
+.profile-goal-title {
+    font-weight: 700;
+    font-size: 13.5px;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    min-width: 0;
+}

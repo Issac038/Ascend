@@ -7,6 +7,7 @@ import {
 
 import { StoreProvider, useStore } from "./store/AppStore";
 import useReminders from "./hooks/useReminders";
+import usePushSubscription from "./hooks/usePushSubscription";
 import { Logo, PageSkeleton } from "./components/ui/Primitives";
 import AuthPage from "./components/auth/AuthPage";
 import Onboarding from "./components/onboarding/Onboarding";
@@ -88,6 +89,7 @@ function MoreMenu() {
 function Shell() {
     const { user, dash, logout, toasts, dismissToast, settings, toast } = useStore();
     useReminders(settings, toast, user);
+    usePushSubscription({ settings, user });
 
     if (!user) return null;
 

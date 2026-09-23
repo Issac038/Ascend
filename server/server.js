@@ -12,6 +12,9 @@ const dataRoutes = require("./routes/data");
 const insightRoutes = require("./routes/insights");
 const nutritionRoutes = require("./routes/nutrition");
 const gymRoutes = require("./routes/gym");
+const { router: journalSecurityRoutes } = require("./routes/journalSecurity");
+const pushRoutes = require("./routes/push");
+const { startScheduler } = require("./services/pushService");
 
 const app = express();
 
@@ -97,6 +100,11 @@ app.use("/api/data", dataRoutes);
 app.use("/api/nutrition", nutritionRoutes);
 app.use("/api/gym", gymRoutes);
 app.use("/api", insightRoutes);
+app.use("/api/journal-security", journalSecurityRoutes);
+app.use("/api/push", pushRoutes);
+
+// Journal content routes live in dataRoutes; the PIN gate middleware is
+// applied inside routes/data.js on the journal endpoints themselves.
 
 // Health check: safe, no config exposure, DB ping included (no credentials).
 app.get("/api/health", async (req, res) => {
@@ -182,6 +190,10 @@ async function startServer() {
 
         app.listen(PORT, () => {
             console.log(`ASCEND server running on port ${PORT}`);
+            // Server-side morning/evening reminder scheduler (Web Push when
+            // VAPID is configured; in-app notifications otherwise). Runs in
+            // the always-on server process — never in the browser.
+            startScheduler();
         });
     } catch (error) {
         console.error("Startup error:", error.message);

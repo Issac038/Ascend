@@ -19,6 +19,23 @@ function lastNDaysKeys(n) {
     return keys;
 }
 
+// The CURRENT CALENDAR WEEK, Sunday → Saturday (SMTWTFS). The previous card
+// dots showed a rolling last-7-days window ending today, which read as e.g.
+// "T F S S M T" on a Tuesday. A fixed week always starts on Sunday.
+function calendarWeekKeys() {
+    const [ty, tm, td] = todayKey().split("-").map(Number);
+    const now = new Date(ty, tm - 1, td);
+    const sunday = new Date(now);
+    sunday.setDate(sunday.getDate() - now.getDay()); // back to Sunday
+    const keys = [];
+    for (let i = 0; i < 7; i += 1) {
+        const d = new Date(sunday);
+        d.setDate(sunday.getDate() + i);
+        keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+    }
+    return keys;
+}
+
 export default function Habits() {
     const { toast, reloadDashboard } = useStore();
     const [habits, setHabits] = useState(null);
@@ -49,6 +66,15 @@ export default function Habits() {
         const map = {};
         active.forEach((h, i) => { map[h._id] = hists[i].data; });
         setHistories(map);
+    }
+
+    // Fetch history for a single habit and merge it (targeted refresh —
+    // toggling/saving one habit must not refetch every habit's history).
+    async function refreshOneHabit(id) {
+        try {
+            const h = await api.get(`/data/habits/${id}/history`);
+            setHistories((prev) => ({ ...prev, [id]: h.data }));
+        } catch { /* next full load recovers */ }
     }
 
     useEffect(() => {
@@ -85,12 +111,17 @@ export default function Habits() {
                 reminderTime: reminderTime || null
             };
             if (editing) {
-                await api.patch(`/data/habits/${editing._id}`, payload);
+                const res = await api.patch(`/data/habits/${editing._id}`, payload);
+                // Targeted update: swap the edited habit in place, refetch only
+                // its history. No full-page reload per save.
+                setHabits((prev) => prev.map((h) => (h._id === editing._id ? res.data.habit : h)));
+                refreshOneHabit(editing._id);
             } else {
-                await api.post("/data/habits", payload);
+                const res = await api.post("/data/habits", payload);
+                setHabits((prev) => [...prev, res.data.habit]);
+                refreshOneHabit(res.data.habit._id);
             }
             setModalOpen(false);
-            load();
             reloadDashboard();
         } catch {
             toast("Failed to save habit");
@@ -100,30 +131,53 @@ export default function Habits() {
     }
 
     async function toggleHabit(h) {
+        // Optimistic: flip immediately, reconcile with the server, roll back
+        // to the previous value on failure.
+        const before = histories[h._id];
+        const day = todayKey();
+        const cur = before?.completions[day];
+        const nextVal = h.type === "numeric"
+            ? Math.max(0, (cur || 0) >= h.target ? (cur || 0) - h.target : (cur || 0) + h.target) // mirrors server delta arithmetic
+            : !(cur === true);
+        setHistories((prev) => ({
+            ...prev,
+            [h._id]: {
+                ...before,
+                completions: { ...(before?.completions || {}), [day]: h.type === "numeric" ? nextVal : nextVal }
+            }
+        }));
         try {
-            const hist = histories[h._id];
-            const val = hist?.completions[todayKey()];
             if (h.type === "numeric") {
-                const done = (val || 0) >= h.target;
+                const done = (cur || 0) >= h.target;
                 await api.post(`/data/habits/${h._id}/toggle`, { delta: done ? -h.target : h.target });
             } else {
                 await api.post(`/data/habits/${h._id}/toggle`, {});
             }
-            load();
             reloadDashboard();
         } catch {
+            setHistories((prev) => ({ ...prev, [h._id]: before }));
             toast("Failed to update habit");
+        } finally {
+            refreshOneHabit(h._id); // authoritative stats (streaks/percentages)
         }
     }
 
     async function confirmDelete() {
+        const target = deleteHabit;
+        if (!target) return;
         setBusy(true);
+        const prevHabits = habits;
+        const prevHist = histories[target._id];
+        // Optimistic removal — the server-side snapshot recompute can take a
+        // moment; the row disappears instantly and is restored on failure.
+        setHabits((prev) => prev.filter((h) => h._id !== target._id));
+        setDeleteHabit(null);
         try {
-            await api.delete(`/data/habits/${deleteHabit._id}`);
-            setDeleteHabit(null);
-            load();
+            await api.delete(`/data/habits/${target._id}`);
             reloadDashboard();
         } catch {
+            setHabits(prevHabits);
+            setHistories((prev) => ({ ...prev, [target._id]: prevHist }));
             toast("Failed to delete habit");
         } finally {
             setBusy(false);
@@ -132,8 +186,8 @@ export default function Habits() {
 
     async function toggleArchive(h) {
         try {
-            await api.patch(`/data/habits/${h._id}`, { archived: !h.archived });
-            load();
+            const res = await api.patch(`/data/habits/${h._id}`, { archived: !h.archived });
+            setHabits((prev) => prev.map((x) => (x._id === h._id ? res.data.habit : x)));
             reloadDashboard();
         } catch {
             toast("Failed to archive habit");
@@ -168,7 +222,6 @@ export default function Habits() {
                         const hist = histories[h._id];
                         const todayVal = hist?.completions[todayKey()];
                         const done = h.type === "numeric" ? (todayVal || 0) >= h.target : todayVal === true;
-                        const last7 = lastNDaysKeys(7);
                         const sched = { 0: false, 1: false, 2: false, 3: false, 4: false, 5: false, 6: false };
                         if (h.frequency === "daily") { for (let i = 0; i < 7; i++) sched[i] = true; }
                         if (h.frequency === "specific_days") { h.specificDays?.forEach((d) => { sched[d] = true; }); }
@@ -184,7 +237,7 @@ export default function Habits() {
                                             <span className="badge">{h.area}</span>
                                             <span className="badge">
                                                 {h.type === "numeric" ? `${h.target} ${h.unit} · ` : ""}
-                                                {h.frequency === "daily" ? "Daily" : h.frequency === "specific_days" ? h.specificDays.map((d) => DAYS[d].slice(0, 2)).join(" ") : `${h.target}× / week`}
+                                                {h.frequency === "daily" ? "Daily" : h.frequency === "specific_days" ? [...(h.specificDays || [])].sort((a, b) => a - b).map((d) => DAYS[d].slice(0, 2)).join(" ") : `${h.target}× / week`}
                                             </span>
                                             {h.difficulty === "hard" && <span className="badge">Hard</span>}
                                         </div>
@@ -206,14 +259,15 @@ export default function Habits() {
                                     </div>
                                 </div>
 
-                                {/* week dots */}
+                                {/* current calendar week — always Sunday → Saturday */}
                                 <div className="week-dots">
-                                    {last7.map((k) => {
+                                    {calendarWeekKeys().map((k) => {
                                         const dow = new Date(k + "T00:00:00").getDay();
                                         const isSched = sched[dow];
                                         const v = hist?.completions[k];
                                         const isDone = h.type === "numeric" ? (v || 0) >= h.target : v === true;
-                                        const cls = isDone ? "done" : isSched ? "scheduled" : "";
+                                        const isFuture = k > todayKey();
+                                        const cls = isDone ? "done" : isFuture ? "future" : isSched ? "scheduled" : "";
                                         return <div key={k} className={`dot ${cls}`} title={k}>{weekdayInitial(k)}</div>;
                                     })}
                                 </div>

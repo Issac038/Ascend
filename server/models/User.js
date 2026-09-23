@@ -34,7 +34,15 @@ const userSchema = new mongoose.Schema(
             active: { type: Boolean, default: false },
             since: { type: String, default: null },
             missedDays: { type: Number, default: 0 }
-        }
+        },
+
+        // ---- Journal PIN (privacy lock) ----
+        // Stored ONLY as a bcrypt hash. Never selected by default, never
+        // returned by any API. Attempts/lockout are enforced server-side.
+        journalPinHash: { type: String, default: null, select: false },
+        journalPinAttempts: { type: Number, default: 0, select: false },
+        journalPinLockUntil: { type: Date, default: null, select: false },
+        journalPinSetAt: { type: Date, default: null, select: false }
     },
     { timestamps: true }
 );

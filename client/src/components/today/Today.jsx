@@ -60,6 +60,20 @@ export default function Today() {
         load().catch(() => toast("Failed to load today"));
     }, [load, toast]);
 
+    // Authoritative refresh for ONE habit after a toggle (streaks/values),
+    // instead of refetching every habit's history per interaction.
+    const refreshOneHabit = useCallback(async (id) => {
+        try {
+            const h = await api.get(`/data/habits/${id}/history`);
+            const c = h.data.completions[date];
+            const habit = h.data.habit;
+            setCompletions((prev) => ({
+                ...prev,
+                [id]: habit.type === "numeric" ? { value: c || 0 } : { completed: c === true }
+            }));
+        } catch { /* next full load recovers */ }
+    }, [date]);
+
     async function toggleTask(task) {
         setTasks((prev) => prev.map((t) => (t._id === task._id ? { ...t, completed: !t.completed } : t)));
         try {
@@ -72,28 +86,44 @@ export default function Today() {
     }
 
     async function skipTask(task) {
+        // Optimistic skip flag; revert on failure.
+        setTasks((prev) => prev.map((t) => (t._id === task._id ? { ...t, skipped: !task.skipped } : t)));
         try {
             await api.patch(`/data/tasks/${task._id}`, { skipped: !task.skipped });
-            load();
             reloadDashboard();
         } catch {
+            setTasks((prev) => prev.map((t) => (t._id === task._id ? { ...t, skipped: task.skipped } : t)));
             toast("Failed to skip task");
         }
     }
 
     async function reschedule(task, dir) {
         try {
+            if (dir !== 0) {
+                // Optimistic removal — a moved task leaves today's list.
+                setTasks((prev) => prev.filter((t) => t._id !== task._id));
+            }
             await api.patch(`/data/tasks/${task._id}`, { date: addDaysKey(task.date, dir) });
             toast(dir > 0 ? "Moved to tomorrow" : "Moved to yesterday");
-            if (dir !== 0) load();
             reloadDashboard();
         } catch {
+            setTasks((prev) => prev.some((t) => t._id === task._id) ? prev : [...prev, task]);
             toast("Failed to reschedule");
         }
     }
 
     async function toggleHabit(habit) {
-        const c = completions[habit._id];
+        // Optimistic habit flip — same pattern as task completion.
+        const c = completions[habit._id] || {};
+        const prevCompletion = completions[habit._id];
+        setCompletions((prev) => {
+            if (habit.type === "numeric") {
+                const value = (prev[habit._id]?.value || 0);
+                const next = value >= habit.target ? Math.max(0, value - habit.target) : value + habit.target;
+                return { ...prev, [habit._id]: { value: next } };
+            }
+            return { ...prev, [habit._id]: { completed: !prev[habit._id]?.completed } };
+        });
         try {
             if (habit.type === "numeric") {
                 const done = (c?.value || 0) >= habit.target;
@@ -101,10 +131,12 @@ export default function Today() {
             } else {
                 await api.post(`/data/habits/${habit._id}/toggle`, { date });
             }
-            load();
             reloadDashboard();
         } catch {
+            setCompletions((prev) => ({ ...prev, [habit._id]: prevCompletion || {} }));
             toast("Failed to update habit");
+        } finally {
+            refreshOneHabit(habit._id);
         }
     }
 
@@ -131,31 +163,34 @@ export default function Today() {
         setBusy(true);
         try {
             if (editing) {
-                await api.patch(`/data/tasks/${editing._id}`, { title, timeBlock, priority, recurrence });
+                const res = await api.patch(`/data/tasks/${editing._id}`, { title, timeBlock, priority, recurrence });
+                setTasks((prev) => prev.map((t) => (t._id === editing._id ? res.data.task : t)));
             } else {
-                await api.post("/data/tasks", { title, timeBlock, priority, recurrence, date });
+                const res = await api.post("/data/tasks", { title, timeBlock, priority, recurrence, date });
+                setTasks((prev) => [...prev, res.data.task]);
             }
             setModalOpen(false);
-            load();
             reloadDashboard();
         } catch {
             toast("Failed to save task");
+            load();
         } finally {
             setBusy(false);
         }
     }
 
     async function confirmDelete() {
-        setBusy(true);
+        const target = deleteTask;
+        if (!target) return;
+        const prevTasks = tasks;
+        setTasks((prev) => prev.filter((t) => t._id !== target._id));
+        setDeleteTask(null);
         try {
-            await api.delete(`/data/tasks/${deleteTask._id}`);
-            setDeleteTask(null);
-            load();
+            await api.delete(`/data/tasks/${target._id}`);
             reloadDashboard();
         } catch {
+            setTasks(prevTasks);
             toast("Failed to delete task");
-        } finally {
-            setBusy(false);
         }
     }
 

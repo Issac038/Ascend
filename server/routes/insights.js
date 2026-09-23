@@ -1,6 +1,7 @@
 const express = require("express");
 
 const auth = require("../middleware/auth");
+const { requireJournalUnlock } = require("./journalSecurity");
 const {
     todayKey, todayKeyFor, addDays, startOfWeek, eachDay,
     startOfMonth, endOfMonth, monthKey, formatShort, monthName
@@ -547,7 +548,7 @@ router.patch("/settings", auth, async (req, res) => {
 // ============================================================
 // DATA: EXPORT / RESET / DELETE
 // ============================================================
-router.get("/export", auth, async (req, res) => {
+router.get("/export", auth, requireJournalUnlock, async (req, res) => {
     try {
         const [user, settings, areas, habits, completions, tasks, goals, journals, snapshots, achievements, meals, workouts, gymPlan, gymSessions] = await Promise.all([
             User.findById(req.userId).select("-password -__v"),

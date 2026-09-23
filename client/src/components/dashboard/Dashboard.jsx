@@ -76,7 +76,10 @@ export default function Dashboard() {
                             : "Start with one action. The rest follows."}
                     </p>
                 </div>
-                <ProgressRing value={score} sub="ASCEND SCORE" />
+                <div className="dash-score-wrap">
+                    <ProgressRing value={score} sub="ASCEND SCORE" />
+                    <p className="dash-score-reminder">Remember the disrespect</p>
+                </div>
             </div>
 
             {recovery?.active && (

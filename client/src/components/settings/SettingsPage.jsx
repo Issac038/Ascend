@@ -10,6 +10,7 @@ export default function SettingsPage() {
     const { user, setUser, dash, settings: storeSettings, applySettings, toast } = useStore();
     const navigate = useNavigate();
     const [settings, setSettings] = useState(storeSettings);
+    const [pushStatus, setPushStatus] = useState(null); // server push capability
     const [confirm, setConfirm] = useState(null); // "reset" | "delete"
     const [busy, setBusy] = useState(false);
 
@@ -17,6 +18,12 @@ export default function SettingsPage() {
     useEffect(() => {
         if (storeSettings) setSettings(storeSettings);
     }, [storeSettings]);
+
+    useEffect(() => {
+        api.get("/push/status")
+            .then((r) => setPushStatus(r.data))
+            .catch(() => setPushStatus(null));
+    }, []);
 
     async function update(section, patch) {
         const next = { ...settings, [section]: { ...settings[section], ...patch } };
@@ -134,9 +141,21 @@ export default function SettingsPage() {
                 <div className="settings-row">
                     <div className="sr-info">
                         <h4>Evening reflection prompt</h4>
-                        <p>Remind me to reflect at the end of the day (in-app, while ASCEND is open).</p>
+                        <p>Remind me at 20:00 — “How did you do today? Finish what remains before the day ends.”</p>
                     </div>
                     <Toggle label="Evening reflection" checked={settings.notifications.eveningReflection} onChange={(v) => update("notifications", { eveningReflection: v })} />
+                </div>
+                <div className="settings-row">
+                    <div className="sr-info">
+                        <h4>Delivery</h4>
+                        <p>
+                            {pushStatus
+                                ? pushStatus.vapidConfigured
+                                    ? "Push notifications are delivered by the ASCEND server, including while the app is closed or in the background."
+                                    : `Currently in-app only (while ASCEND is open). Background delivery needs server configuration: ${pushStatus.missing.join(", ")}.`
+                                : "In-app reminders appear while ASCEND is open. Server push availability could not be checked."}
+                        </p>
+                    </div>
                 </div>
                 <div className="settings-row">
                     <div className="sr-info">

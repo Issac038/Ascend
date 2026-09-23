@@ -6,11 +6,12 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node test/scoring.test.js && node test/nutrition-engine.test.js && node test/run-tests.js && node test/nutrition-api.test.js && node test/gym.test.js",
+    "test": "node test/scoring.test.js && node test/nutrition-engine.test.js && node test/run-tests.js && node test/nutrition-api.test.js && node test/gym.test.js && node test/v11.test.js",
     "test:scoring": "node test/scoring.test.js",
     "test:nutrition": "node test/nutrition-engine.test.js",
     "test:nutrition-api": "node test/nutrition-api.test.js",
-    "test:api": "node test/run-tests.js"
+    "test:api": "node test/run-tests.js",
+    "test:v11": "node test/v11.test.js"
   },
   "keywords": [],
   "author": "",
@@ -29,8 +30,10 @@
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.3",
-    "nodemailer": "^10.0.10"
+    "nodemailer": "^10.0.10",
+    "web-push": "^3.6.7"
   },
+  "_v11note": "Background notifications require WEB_PUSH_VAPID_PUBLIC_KEY, WEB_PUSH_VAPID_PRIVATE_KEY (+ optional WEB_PUSH_SUBJECT) in the environment. They are intentionally NOT set here — see services/pushService.js.",
   "devDependencies": {
     "nodemon": "^3.1.14",
     "supertest": "^7.2.2"

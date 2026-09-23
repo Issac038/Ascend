@@ -136,7 +136,7 @@ export default function Onboarding() {
                         <p className="hint" style={{ margin: "8px 0 22px" }}>Your name and the areas of life you want to improve.</p>
                         <div className="grid" style={{ gap: 18 }}>
                             <Field label="Your name">
-                                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Issac" autoFocus />
+                                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" autoFocus />
                             </Field>
                             <Field label="Which areas do you want to improve?">
                                 <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 }}>

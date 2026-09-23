@@ -35,6 +35,9 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         navigateFallback: 'index.html',
         navigateFallbackDenylist: [/^\/api\//],
+        // Push handlers run INSIDE the generated service worker — this is
+        // what delivers notifications while the app is closed/backgrounded.
+        importScripts: ['push-handler.js'],
         runtimeCaching: [
           {
             // Google Fonts: cacheable static assets, stale-while-revalidate
