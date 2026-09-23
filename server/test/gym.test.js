@@ -415,6 +415,32 @@ async function main() {
         const histAfterDel = await req("GET", "/api/gym/history", { cookies: userA });
         assert(histAfterDel.json.sessions.some((s) => s.date === monday), "history survives workout deletion (snapshot)");
 
+        // ============ DUPLICATE / ORDER INTEGRITY ============
+        console.log("\n-- duplicate & order integrity --");
+
+        const dup = await req("POST", "/api/gym/workouts", {
+            cookies: userA,
+            body: {
+                name: "Dup Order",
+                exercises: [
+                    { name: "Bench Press", type: "reps", sets: 4, reps: 8 },
+                    { name: "Squat", type: "reps", sets: 3, reps: 5 },
+                    { name: "bench   press", type: "reps", sets: 1, reps: 1 }, // case/whitespace duplicate
+                    { name: "Bench Press", type: "reps", sets: 2, reps: 20 }, // exact duplicate
+                    { name: "Calf Raise", type: "reps", sets: 4, reps: 15 }
+                ]
+            }
+        });
+        assert(dup.status === 201, "workout with duplicate names created");
+        const dupNames = dup.json.workout.exercises.map((e) => e.name);
+        assert(dupNames.length === 3, "duplicate exercise names deduped", `got ${dupNames.length}: ${dupNames.join(", ")}`);
+        assert(
+            dupNames[0] === "Bench Press" && dupNames[1] === "Squat" && dupNames[2] === "Calf Raise",
+            "exercise order preserved (first occurrence wins)"
+        );
+        const dupDel = await req("DELETE", `/api/gym/workouts/${dup.json.workout._id}`, { cookies: userA });
+        assert(dupDel.status === 200, "dup-order workout cleaned up");
+
         // ============ RESET / DELETE-ACCOUNT INTEGRATION ============
         console.log("\n-- reset & export --");
 

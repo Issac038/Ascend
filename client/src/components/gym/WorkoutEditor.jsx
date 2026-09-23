@@ -1,14 +1,29 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import api from "../../services/api";
 import { Modal, Field } from "../ui/Primitives";
-import { Plus, Trash2, ChevronUp, ChevronDown } from "lucide-react";
+import { Plus, Trash2, ChevronUp, ChevronDown, Search } from "lucide-react";
 import { EXERCISE_LIBRARY } from "../../data/exerciseLibrary";
 
 const emptyEx = () => ({ name: "", type: "reps", sets: 4, reps: 8, durationMin: 20, restSec: "", weightKg: "", notes: "" });
 
+function exKey(name) {
+    return String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function libraryMeta(item) {
+    return item.type === "duration"
+        ? (item.durationSec >= 60 ? `${Math.round(item.durationSec / 60)} min` : `${item.durationSec} sec`)
+        : `${item.sets} × ${item.reps}`;
+}
+
 // Create/edit a reusable workout. Exercises support two structures:
 // sets × reps, or sets × duration (Plank 3 × 60 sec, Treadmill 20 min).
 // Weight/rest/notes are always optional.
+//
+// Exercise selection is MULTI-SELECT: the picker holds a Set of chosen
+// names, the user confirms once, and every selected exercise is added to
+// the workout in library order. One POST carries the whole exercises array
+// — no per-exercise API calls.
 export default function WorkoutEditor({ open, onClose, onSaved, workout = null }) {
     const editing = !!workout;
     const [name, setName] = useState(workout?.name || "");
@@ -29,6 +44,54 @@ export default function WorkoutEditor({ open, onClose, onSaved, workout = null }
     const [error, setError] = useState("");
     const [saving, setSaving] = useState(false);
     const [picker, setPicker] = useState(false);
+    const [search, setSearch] = useState("");
+    // Names chosen in the picker but not yet confirmed. A Set guarantees a
+    // library exercise can only ever be added once (no duplicates).
+    const [pending, setPending] = useState(() => new Set());
+
+    const groups = useMemo(() => {
+        const q = search.trim().toLowerCase();
+        return EXERCISE_LIBRARY
+            .map((g) => ({ ...g, items: g.items.filter((i) => !q || i.name.toLowerCase().includes(q)) }))
+            .filter((g) => g.items.length > 0);
+    }, [search]);
+
+    const existingKeys = useMemo(() => new Set(exercises.map((e) => exKey(e.name))), [exercises]);
+
+    function togglePending(itemName) {
+        setPending((prev) => {
+            const next = new Set(prev);
+            if (next.has(itemName)) next.delete(itemName);
+            else next.add(itemName);
+            return next;
+        });
+    }
+
+    // Confirm once: all selected exercises are added in library order.
+    // Already-present exercises are skipped (duplicate prevention); the
+    // picker also disables them so this is a belt-and-braces check.
+    function confirmSelection() {
+        setExercises((prev) => {
+            const have = new Set(prev.map((e) => exKey(e.name)));
+            const additions = [];
+            for (const g of EXERCISE_LIBRARY) {
+                for (const item of g.items) {
+                    if (!pending.has(item.name) || have.has(exKey(item.name))) continue;
+                    have.add(exKey(item.name));
+                    additions.push({
+                        ...emptyEx(),
+                        ...item,
+                        durationMin: item.durationSec ? Math.round(item.durationSec / 60) : "",
+                        durationSecRaw: ""
+                    });
+                }
+            }
+            return additions.length ? [...prev, ...additions] : prev;
+        });
+        setPending(new Set());
+        setSearch("");
+        setPicker(false);
+    }
 
     function updateEx(i, patch) {
         setExercises((prev) => prev.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
@@ -80,6 +143,14 @@ export default function WorkoutEditor({ open, onClose, onSaved, workout = null }
         }
     }
 
+    function closePicker() {
+        setPicker(false);
+        setPending(new Set());
+        setSearch("");
+    }
+
+    const pendingCount = pending.size;
+
     return (
         <Modal
             open={open}
@@ -106,46 +177,86 @@ export default function WorkoutEditor({ open, onClose, onSaved, workout = null }
             <div className="row between" style={{ marginTop: 8 }}>
                 <label style={{ fontWeight: 700, fontSize: 13 }}>Exercises</label>
                 <button type="button" className="btn ghost small" onClick={() => setPicker((v) => !v)}>
-                    <Plus size={14} /> Library
+                    <Plus size={14} /> Select exercises
                 </button>
             </div>
 
             {picker && (
-                <div className="gym-picker">
-                    {EXERCISE_LIBRARY.map((g) => (
-                        <div key={g.group} className="gym-picker-group">
-                            <div className="gym-picker-title">{g.group}</div>
-                            {g.items.map((item) => (
-                                <button
-                                    key={item.name}
-                                    type="button"
-                                    className="gym-picker-item"
-                                    onClick={() => setExercises((prev) => [...prev, { ...emptyEx(), ...item, durationMin: item.durationSec ? Math.round(item.durationSec / 60) : "", durationSecRaw: "" }])}
-                                >
-                                    {item.name}
-                                    <span className="gym-picker-meta">
-                                        {item.type === "duration" ? `${Math.round(item.durationSec / 60)} min` : `${item.sets} × ${item.reps}`}
-                                    </span>
-                                </button>
-                            ))}
-                        </div>
-                    ))}
-                    <div className="gym-picker-group">
-                        <div className="gym-picker-title">Custom</div>
-                        <button type="button" className="gym-picker-item" onClick={() => setExercises((prev) => [...prev, emptyEx()])}>
-                            + Custom exercise
+                <div className="gym-ms">
+                    <div className="gym-ms-search">
+                        <Search size={15} aria-hidden="true" />
+                        <input
+                            type="search"
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            placeholder="Search exercises…"
+                            aria-label="Search exercises"
+                            autoComplete="off"
+                        />
+                    </div>
+
+                    <div className="gym-ms-list" role="group" aria-label="Exercise library">
+                        {groups.length === 0 && <p className="hint" style={{ padding: "10px 4px" }}>No exercises match “{search}”.</p>}
+                        {groups.map((g) => (
+                            <div key={g.group} className="gym-ms-group">
+                                <div className="gym-ms-title">{g.group}</div>
+                                {g.items.map((item) => {
+                                    const chosen = pending.has(item.name);
+                                    const already = existingKeys.has(exKey(item.name));
+                                    return (
+                                        <button
+                                            key={item.name}
+                                            type="button"
+                                            className={`gym-ms-item${chosen ? " selected" : ""}${already ? " added" : ""}`}
+                                            onClick={() => !already && togglePending(item.name)}
+                                            disabled={already}
+                                            aria-pressed={chosen}
+                                            title={already ? "Already in this workout" : undefined}
+                                        >
+                                            <span className="gym-ms-check" aria-hidden="true">{chosen ? "✓" : ""}</span>
+                                            <span className="gym-ms-name">{item.name}</span>
+                                            <span className="gym-ms-meta">{libraryMeta(item)}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="gym-ms-bar">
+                        <span className="gym-ms-count" aria-live="polite">
+                            {pendingCount === 0 ? "Select exercises" : `Selected: ${pendingCount} exercise${pendingCount === 1 ? "" : "s"}`}
+                        </span>
+                        <button type="button" className="btn ghost small" onClick={closePicker}>Cancel</button>
+                        <button
+                            type="button"
+                            className="btn primary small"
+                            onClick={confirmSelection}
+                            disabled={pendingCount === 0}
+                        >
+                            {pendingCount === 0 ? "Add selected" : `Add ${pendingCount} exercise${pendingCount === 1 ? "" : "s"}`}
                         </button>
                     </div>
                 </div>
             )}
 
+            {/* Custom exercise stays available for anything not in the library. */}
+            {!picker && (
+                <div style={{ marginTop: 8 }}>
+                    <button type="button" className="btn ghost small" onClick={() => setExercises((prev) => [...prev, emptyEx()])}>
+                        + Custom exercise
+                    </button>
+                </div>
+            )}
+
             {exercises.length === 0 && (
-                <p className="hint" style={{ marginTop: 10 }}>No exercises yet — pick from the library or add a custom one.</p>
+                <p className="hint" style={{ marginTop: 10 }}>No exercises yet — select from the library or add a custom one.</p>
             )}
 
             {exercises.map((ex, i) => (
                 <div className="gym-ex-row card plain" key={i}>
                     <div className="row" style={{ gap: 8 }}>
+                        <span className="gym-ex-ordinal mono-num">{i + 1}</span>
                         <input
                             className="gym-ex-name"
                             value={ex.name}

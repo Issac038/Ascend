@@ -77,7 +77,19 @@ function validateExercises(raw) {
         }
         out.push(item);
     }
-    return { exercises: out };
+    // Data integrity: duplicate exercise names would collide in session
+    // snapshot keys (toggle works per normalized name), so later repeats are
+    // dropped. First occurrence wins and order is preserved.
+    const seen = new Set();
+    const deduped = [];
+    for (const e of out) {
+        const k = e.name.trim().toLowerCase().replace(/\s+/g, " ");
+        if (!seen.has(k)) {
+            seen.add(k);
+            deduped.push(e);
+        }
+    }
+    return { exercises: deduped };
 }
 
 function progressOf(sessionOrExercises) {

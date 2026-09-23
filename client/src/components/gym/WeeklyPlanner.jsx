@@ -55,7 +55,7 @@ export default function WeeklyPlanner({ open, onClose, plan, workouts, onPlanSav
                     <div style={{ marginBottom: 14 }}>
                         <EmptyState
                             title="No workouts yet"
-                            message="Create your first workout, then assign it to the days you train."
+                            message="Create a workout first, then assign it to your week. Rest days need no workout — leave a day set to “Rest day (no workout)”."
                             action={<button className="btn primary" onClick={onCreateWorkout}>Create workout</button>}
                         />
                     </div>
@@ -82,7 +82,8 @@ export default function WeeklyPlanner({ open, onClose, plan, workouts, onPlanSav
                                     onChange={(e) => setDraft((prev) => ({ ...prev, [key]: e.target.value }))}
                                     aria-label={`${label} workout`}
                                 >
-                                    <option value="">Rest day</option>
+                                    {/* Rest day is a schedule state, not a workout — empty value maps to workoutId: null. */}
+                                    <option value="">Rest day (no workout)</option>
                                     {workouts.map((wo) => <option key={wo._id} value={wo._id}>{wo.name}</option>)}
                                 </select>
                                 {w && (
