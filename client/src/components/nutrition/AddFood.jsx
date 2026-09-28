@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, ScanBarcode, Search, ChevronRight, ImageOff } from "lucide-react";
+import { Camera, ScanBarcode, Search, ChevronRight, ImageOff, ChefHat } from "lucide-react";
 import api from "../../services/api";
 import { useStore } from "../../store/AppStore";
 import { Modal, Field } from "../ui/Primitives";
 import PortionEditor from "./PortionEditor";
+import CustomFoodEditor from "./CustomFoodEditor";
 
 const MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"];
 
@@ -17,13 +18,16 @@ function guessMealType() {
 
 export default function AddFood({ open, onClose, date, capabilities, onSaved }) {
     const { toast } = useStore();
-    const [tab, setTab] = useState("search"); // search | photo | barcode
+    const [tab, setTab] = useState("search"); // search | photo | barcode | custom
     const [query, setQuery] = useState("");
     const [results, setResults] = useState(null); // null = not searched yet
+    const [customResults, setCustomResults] = useState([]);
+    const [matchType, setMatchType] = useState(null);
     const [searching, setSearching] = useState(false);
     const [searchError, setSearchError] = useState(null);
     const [selected, setSelected] = useState(null); // food detail for portion editing
     const [detailLoading, setDetailLoading] = useState(false);
+    const [customOpen, setCustomOpen] = useState(false);
     const [mealType, setMealType] = useState(guessMealType());
     const [saving, setSaving] = useState(false);
     const debounceRef = useRef(null);
@@ -35,6 +39,7 @@ export default function AddFood({ open, onClose, date, capabilities, onSaved }) 
             setTab("search");
             setQuery("");
             setResults(null);
+            setCustomResults([]);
             setSearchError(null);
             setSelected(null);
             setMealType(guessMealType());
@@ -57,13 +62,16 @@ export default function AddFood({ open, onClose, date, capabilities, onSaved }) 
         setSearching(true);
         debounceRef.current = setTimeout(async () => {
             try {
-                const res = await api.get("/nutrition/search", { params: { q } });
+                const res = await api.get("/nutrition/library/search", { params: { q } });
                 if (latestQuery.current !== q) return; // stale response
-                setResults(res.data);
+                setResults(res.data.results || []);
+                setCustomResults(res.data.customResults || []);
+                setMatchType(res.data.matchType || null);
                 setSearchError(null);
             } catch (e) {
                 if (latestQuery.current !== q) return;
                 setResults(null);
+                setCustomResults([]);
                 setSearchError(searchErrorMessage(e));
             } finally {
                 if (latestQuery.current === q) setSearching(false);
@@ -89,6 +97,7 @@ export default function AddFood({ open, onClose, date, capabilities, onSaved }) 
         try {
             await api.post("/nutrition/meals", { date, mealType, source, ingredients });
             toast("Meal saved");
+            recordUsage(ingredients);
             setSelected(null);
             onClose();
             onSaved();
@@ -96,6 +105,22 @@ export default function AddFood({ open, onClose, date, capabilities, onSaved }) 
             toast(e.response?.data?.message || "Failed to save meal");
         } finally {
             setSaving(false);
+        }
+    }
+
+    // Non-blocking usage tracking: recents/favorites lists in My Foods.
+    function recordUsage(ingredients) {
+        for (const ing of ingredients || []) {
+            if (ing.origin === "custom_food") {
+                api.post("/nutrition/library/refs", {
+                    kind: "custom", customFoodId: ing.sourceFoodId, logCountBump: true,
+                }).catch(() => {});
+            } else if (ing.sourceFoodId) {
+                api.post("/nutrition/library/refs", {
+                    kind: "corpus", sourceFoodId: ing.sourceFoodId,
+                    name: ing.displayName || "Food", logCountBump: true,
+                }).catch(() => {});
+            }
         }
     }
 
@@ -108,7 +133,7 @@ export default function AddFood({ open, onClose, date, capabilities, onSaved }) 
                 setMealType={setMealType}
                 saving={saving}
                 onClose={() => setSelected(null)}
-                onConfirm={(ingredients) => saveMeal(ingredients, "db_search")}
+                onConfirm={(ingredients) => saveMeal(ingredients, selected.custom ? "custom_food" : "db_search")}
             />
         );
     }
@@ -142,6 +167,9 @@ export default function AddFood({ open, onClose, date, capabilities, onSaved }) 
                 <button role="tab" aria-selected={tab === "search"} className={`nutrition-tab${tab === "search" ? " active" : ""}`} onClick={() => setTab("search")}>
                     <Search size={15} /> Search
                 </button>
+                <button role="tab" aria-selected={tab === "custom"} className={`nutrition-tab${tab === "custom" ? " active" : ""}`} onClick={() => setTab("custom")}>
+                    <ChefHat size={15} /> Create
+                </button>
                 <button role="tab" aria-selected={tab === "photo"} className={`nutrition-tab${tab === "photo" ? " active" : ""}`} onClick={() => setTab("photo")}>
                     <Camera size={15} /> Photo
                 </button>
@@ -155,13 +183,29 @@ export default function AddFood({ open, onClose, date, capabilities, onSaved }) 
                     query={query}
                     setQuery={setQuery}
                     results={results}
+                    customResults={customResults}
+                    matchType={matchType}
                     searching={searching}
                     searchError={searchError}
                     capabilities={capabilities}
                     detailLoading={detailLoading}
                     onPick={pickFood}
+                    onPickCustom={(cf) => {
+                        // custom foods skip the corpus detail call — their
+                        // snapshot is already known
+                        setSelected({
+                            custom: true,
+                            customFoodId: cf.customFoodId,
+                            name: cf.brand ? `${cf.brand} ${cf.name}` : cf.name,
+                            brand: cf.brand,
+                            per100g: cf.per100g,
+                            servingSizeG: cf.servingSizeG,
+                        });
+                    }}
+                    onCreateCustom={() => setCustomOpen(true)}
                 />
             )}
+            {tab === "custom" && <CustomFoodTab onCreate={() => setCustomOpen(true)} />}
             {tab === "photo" && <PhotoTab />}
             {tab === "barcode" && (
                 <BarcodeTab
@@ -172,6 +216,23 @@ export default function AddFood({ open, onClose, date, capabilities, onSaved }) 
                     onManualSaved={onSaved && (() => { onClose(); onSaved(); })}
                 />
             )}
+
+            {/* create/edit a custom food (layered above the modal) */}
+            <CustomFoodEditor
+                open={customOpen}
+                onClose={() => setCustomOpen(false)}
+                onSaved={(food) => {
+                    // track the new food as a reference so it shows in My Foods
+                    api.post("/nutrition/library/refs", {
+                        kind: "custom",
+                        customFoodId: food._id,
+                        name: food.brand ? `${food.brand} ${food.name}` : food.name,
+                        brand: food.brand || null,
+                    }).catch(() => {});
+                    setTab("search");
+                    setQuery(food.name);
+                }}
+            />
         </Modal>
     );
 }
@@ -189,13 +250,15 @@ function mealLabel(type, date) {
 }
 
 // ---------------- Search tab ----------------
-function SearchTab({ query, setQuery, results, searching, searchError, capabilities, detailLoading, onPick }) {
+function SearchTab({ query, setQuery, results, customResults, matchType, searching, searchError, capabilities, detailLoading, onPick, onPickCustom, onCreateCustom }) {
+    const hasResults = (results || []).length > 0;
+    const hasCustom = (customResults || []).length > 0;
     if (!capabilities?.search) {
         return (
             <div className="nutrition-unavailable">
                 <ImageOff size={22} />
                 <p>Nutrition search is unavailable — the food corpus isn't loaded on the server.</p>
-                <p className="hint">You can still log foods manually below once search is restored.</p>
+                <p className="hint">You can still create a custom food or log foods manually in the Barcode tab.</p>
             </div>
         );
     }
@@ -205,7 +268,7 @@ function SearchTab({ query, setQuery, results, searching, searchError, capabilit
                 <input
                     className="input"
                     type="search"
-                    placeholder='Search for a food... e.g. "masala dosa", "chicken biryani", "pasta"'
+                    placeholder='Search for a food... e.g. "puttu", "masala dosa", "chicken biryani"'
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     autoComplete="off"
@@ -221,33 +284,78 @@ function SearchTab({ query, setQuery, results, searching, searchError, capabilit
                 </div>
             )}
 
-            {!searching && !searchError && results && results.results && results.results.length === 0 && (
-                <p className="nutrition-status">No foods found. Try another name.</p>
+            {!searching && !searchError && results !== null && !hasResults && !hasCustom && (
+                <div className="nutrition-unavailable" role="status">
+                    <p>Nothing in the food database matches "{query.trim()}".</p>
+                    <button className="btn ghost small" onClick={onCreateCustom}>Create it as a custom food</button>
+                </div>
             )}
 
-            <div className="nutrition-results">
-                {!searching && results && (results.results || []).map((f) => (
-                    <button key={f.foodId} className="nutrition-result" onClick={() => onPick(f)} disabled={detailLoading}>
-                        <div className="nutrition-result-info">
-                            <span className="nutrition-result-name">{f.brand ? `${f.brand} ` : ""}{f.name}</span>
-                            <span className="hint">
-                                {f.category || "food"}
-                                {f.servingSizeG ? ` · ~${Math.round(f.servingSizeG)} g per serving` : ""}
-                            </span>
-                        </div>
-                        {/* kcal shown is per 100 g (the corpus basis) — the
-                            portion editor scales it to the chosen amount */}
-                        <span className="nutrition-result-kcal mono-num">
-                            {f.energyKcal == null ? "—" : Math.round(f.energyKcal)}
-                            <span>{f.energyKcal == null ? "" : " kcal/100g"}</span>
-                        </span>
-                        <ChevronRight size={15} className="nutrition-result-chevron" />
-                    </button>
-                ))}
-            </div>
-            {!searching && results && (results.results || []).length > 0 && (
-                <p className="hint" style={{ marginTop: 8 }}>Values shown per 100 g — you'll pick the portion next.</p>
+            {hasCustom && (
+                <>
+                    <p className="p-label" style={{ margin: "12px 0 8px" }}>MY FOODS</p>
+                    <div className="nutrition-results">
+                        {customResults.map((cf) => (
+                            <button key={cf.customFoodId} className="nutrition-result" onClick={() => onPickCustom(cf)} disabled={detailLoading}>
+                                <span className="nutrition-result-kind"><ChefHat size={14} /></span>
+                                <div className="nutrition-result-info">
+                                    <span className="nutrition-result-name">{cf.brand ? `${cf.brand} ` : ""}{cf.name}</span>
+                                    <span className="hint">your custom food · user-provided values</span>
+                                </div>
+                                <span className="nutrition-result-kcal mono-num">
+                                    {cf.per100g?.kcal == null ? "—" : Math.round(cf.per100g.kcal)}
+                                    <span>{cf.per100g?.kcal == null ? "" : " kcal/100g"}</span>
+                                </span>
+                                <ChevronRight size={15} className="nutrition-result-chevron" />
+                            </button>
+                        ))}
+                    </div>
+                </>
             )}
+
+            {hasResults && (
+                <>
+                    <p className="p-label" style={{ margin: "12px 0 8px" }}>
+                        {matchType === "exact" ? "FOOD DATABASE · EXACT MATCH" : "FOOD DATABASE"}
+                    </p>
+                    <div className="nutrition-results">
+                        {results.map((f) => (
+                            <button key={f.foodId} className="nutrition-result" onClick={() => onPick(f)} disabled={detailLoading}>
+                                <span className={`nutrition-match ${f.matchType === "exact" ? "match-exact" : f.matchType === "branded" ? "match-branded" : "match-approx"}`}>
+                                    {f.matchType === "exact" ? "Exact" : f.matchType === "branded" ? "Brand" : "Similar"}
+                                </span>
+                                <div className="nutrition-result-info">
+                                    <span className="nutrition-result-name">{f.brand ? `${f.brand} ` : ""}{f.name}</span>
+                                    <span className="hint">
+                                        {f.category || "food"}
+                                        {f.servingSizeG ? ` · ~${Math.round(f.servingSizeG)} g per serving` : ""}
+                                    </span>
+                                </div>
+                                {/* kcal shown is per 100 g (the corpus basis) — the
+                                    portion editor scales it to the chosen amount */}
+                                <span className="nutrition-result-kcal mono-num">
+                                    {f.energyKcal == null ? "—" : Math.round(f.energyKcal)}
+                                    <span>{f.energyKcal == null ? "" : " kcal/100g"}</span>
+                                </span>
+                                <ChevronRight size={15} className="nutrition-result-chevron" />
+                            </button>
+                        ))}
+                    </div>
+                    <p className="hint" style={{ marginTop: 8 }}>Values shown per 100 g — you'll pick the portion next.</p>
+                </>
+            )}
+        </div>
+    );
+}
+
+// ---------------- Create tab ----------------
+function CustomFoodTab({ onCreate }) {
+    return (
+        <div className="nutrition-unavailable" style={{ padding: "30px 10px" }}>
+            <ChefHat size={22} />
+            <p>Create a food the database doesn't have — a homemade dish, a local brand, your own recipe.</p>
+            <p className="hint">Saved foods are reusable from search and My Foods, and are marked as user-provided values.</p>
+            <button className="btn primary" style={{ marginTop: 8 }} onClick={onCreate}>Create a custom food</button>
         </div>
     );
 }

@@ -8,6 +8,7 @@ const engine = require("../nutrition/index");
 const { validateVisionPayload, validateLabelPayload, ValidationError } = require("../nutrition/schema");
 const { clamp, totals, confidence, repair, resolver } = require("../nutrition/index");
 const { canonicalConceptKey, updatePrior, isTrusted } = require("../nutrition/gramEngine");
+const { GRAMS_MIN, GRAMS_MAX } = require("../models/NutritionLibrary");
 
 const router = express.Router();
 
@@ -147,8 +148,13 @@ router.get("/capabilities", auth, async (req, res) => {
 });
 
 // ============================================================
-// CORPUS SEARCH — free text over the local USDA corpus.
+// CORPUS SEARCH — free text over the local corpus (USDA + Ascend seed rows),
+// extended with alias + spelling-tolerant matching and matchType labels.
+// The legacy resolver shape (outcome/ladderStep) is preserved for
+// compatibility; `matchType` is additive.
 // ============================================================
+const searchService = require("../nutrition/searchService");
+
 router.get("/search", auth, async (req, res) => {
     try {
         const q = String(req.query.q || "").trim();
@@ -156,32 +162,25 @@ router.get("/search", auth, async (req, res) => {
         if (q.length > 120) return res.status(400).json({ success: false, message: "Search query is too long" });
 
         const coll = getColl();
-        const result = await resolver.resolveByText(coll, {
-            canonicalFoodKey: q,
-            observedBrand: null,
-            prepFacet: null,
-            modelCategory: null,
-            estimatedGrams: null,
-        });
+        const { rows, matchType } = await searchService.searchFoods(coll, q, { limit: 12 });
 
-        if (result.zeroHit) {
-            return res.json({ success: true, query: q, results: [], outcome: "miss" });
-        }
-        const scored = result.outcome.kind === "miss" ? [] : result.outcome.kind === "auto_accepted" ? [result.outcome.candidate] : result.outcome.candidates;
         res.json({
             success: true,
             query: q,
-            outcome: result.outcome.kind,
-            ladderStep: result.ladderStep,
-            results: scored.slice(0, 12).map((c) => ({
-                foodId: c.foodId,
-                name: c.name,
-                brand: c.brand,
-                category: c.category,
-                cuisine: c.cuisine,
-                servingSizeG: c.servingSizeG,
-                energyKcal: c.energyKcal,
-                score: Math.round(c.score * 100) / 100,
+            outcome: rows.length === 0 ? "miss" : matchType === "exact" ? "auto_accepted" : "needs_disambiguation",
+            matchType,
+            results: rows.map((r) => ({
+                foodId: r.foodId,
+                name: r.name,
+                brand: r.brand,
+                category: r.category,
+                cuisine: r.cuisine,
+                source: r.source,
+                servingSizeG: r.servingSizeG,
+                portionPerUnitG: r.portionPerUnitG,
+                energyKcal: r.energyKcal,
+                matchType: r.matchType,
+                matchScore: Math.round((r.matchScore || 0) * 100) / 100,
             })),
         });
     } catch (e) {
@@ -281,6 +280,39 @@ router.get("/meals", auth, async (req, res) => {
 async function buildIngredientRow(raw) {
     if (raw == null || typeof raw !== "object") return null;
     const origin = String(raw.origin || "db_search");
+
+    // A row referencing one of the user's own custom foods. Nutrition values
+    // ALWAYS come from the stored CustomFood (server-owned) — a client-supplied
+    // snapshot is ignored, same tamper-resistance contract as corpus rows.
+    if (origin === "custom_food") {
+        const { NutritionCustomFood } = require("../models/NutritionLibrary");
+        const cf = await NutritionCustomFood.findOne({ _id: String(raw.sourceFoodId || ""), userId: req.userId });
+        if (!cf) return null;
+        const grams = Math.min(Math.max(Number(raw.grams) || (cf.servingSizeG || 100), GRAMS_MIN), GRAMS_MAX);
+        return {
+            id: `cf-${cf._id}-${Math.random().toString(36).slice(2, 8)}`,
+            displayName: cf.brand ? `${cf.brand} ${cf.name}`.slice(0, 160) : cf.name,
+            sourceFoodId: null,
+            grams,
+            nutrientSnapshot: {
+                kcal: cf.kcal,
+                protein_g: cf.protein_g,
+                fat_g: cf.fat_g,
+                carbs_g: cf.carbs_g,
+                fiber_g: cf.fiber_g,
+                sugar_g: cf.sugar_g,
+                sodium_mg: cf.sodium_mg,
+            },
+            origin: "custom_food",
+            sourceUrl: null,
+            gramPathway: "user_edited",
+            bandHalfPct: 0,
+            isEstimate: false,
+            assumptions: [],
+            macrosUserEdited: false,
+            corrections: [],
+        };
+    }
 
     if (origin === "manual_custom") {
         const name = String(raw.displayName || "").trim().slice(0, 160);

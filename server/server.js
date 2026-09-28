@@ -11,6 +11,7 @@ const authRoutes = require("./routes/auth");
 const dataRoutes = require("./routes/data");
 const insightRoutes = require("./routes/insights");
 const nutritionRoutes = require("./routes/nutrition");
+const nutritionLibraryRoutes = require("./routes/nutritionLibrary");
 const gymRoutes = require("./routes/gym");
 const { router: journalSecurityRoutes } = require("./routes/journalSecurity");
 const pushRoutes = require("./routes/push");
@@ -98,6 +99,7 @@ app.use("/api", apiLimiter);
 app.use("/api/auth", authRoutes);
 app.use("/api/data", dataRoutes);
 app.use("/api/nutrition", nutritionRoutes);
+app.use("/api/nutrition", nutritionLibraryRoutes);
 app.use("/api/gym", gymRoutes);
 app.use("/api", insightRoutes);
 app.use("/api/journal-security", journalSecurityRoutes);
@@ -187,6 +189,17 @@ async function startServer() {
             serverSelectionTimeoutMS: 10000
         });
         console.log("MongoDB connected");
+
+        // Idempotent merge of the curated Kerala/Indian seed rows into the
+        // nutrition corpus. Non-fatal: a failed seed keeps search on the
+        // USDA rows only.
+        try {
+            const { seedKeralaFoods } = require("./nutrition/keralaSeeds");
+            const seeded = await seedKeralaFoods(mongoose.connection.collection("nutrition_foods"));
+            console.log(`Nutrition seed rows ensured (${seeded})`);
+        } catch (e) {
+            console.error("Nutrition seeding skipped:", e.message);
+        }
 
         app.listen(PORT, () => {
             console.log(`ASCEND server running on port ${PORT}`);

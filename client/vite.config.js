@@ -60,7 +60,10 @@ export default defineConfig({
     // VITE_API_URL to the real API origin (see client/.env.example).
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        // NOTE: default is 5000. A stale node process from another project
+        // currently occupies :5000 on this machine, so local dev points at
+        // 5001 (override with VITE_API_PORT). Production is unaffected.
+        target: `http://localhost:${process.env.VITE_API_PORT || 5001}`,
         changeOrigin: true
       }
     }

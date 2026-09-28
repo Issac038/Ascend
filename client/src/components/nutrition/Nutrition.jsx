@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, ChevronLeft, ChevronRight, Flame, Beef, Wheat, UtensilsCrossed, Trash2 } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Flame, Beef, Wheat, UtensilsCrossed, Trash2, Search, Layers, ChefHat } from "lucide-react";
 import api from "../../services/api";
 import { useStore } from "../../store/AppStore";
 import { PageSkeleton, EmptyState, ConfirmDialog } from "../ui/Primitives";
 import { formatShort, todayKey } from "../../utils/format";
 import AddFood from "./AddFood";
+import MealBuilder from "./MealBuilder";
+import FoodLibrary from "./FoodLibrary";
 import MealEditor from "./MealEditor";
 
 const MEAL_ORDER = ["breakfast", "lunch", "dinner", "snack"];
@@ -45,7 +47,9 @@ export default function Nutrition() {
     const [date, setDate] = useState(todayKey());
     const [data, setData] = useState(null); // { date, meals, totals, today }
     const [loadError, setLoadError] = useState(null);
-    const [addOpen, setAddOpen] = useState(false);
+    const [addOpen, setAddOpen] = useState(false);      // Search / quick-add
+    const [builderOpen, setBuilderOpen] = useState(false); // Build a meal
+    const [libraryOpen, setLibraryOpen] = useState(false); // My foods & meals
     const [editingMeal, setEditingMeal] = useState(null);
     const [capabilities, setCapabilities] = useState(null);
     const [confirmMeal, setConfirmMeal] = useState(null); // entry awaiting delete confirmation
@@ -148,9 +152,14 @@ export default function Nutrition() {
                     <h1>Nutrition</h1>
                     <p className="sub">Fuel the machine. Track what goes in.</p>
                 </div>
-                <button className="btn primary" onClick={() => setAddOpen(true)} disabled={!capabilities?.search}>
-                    <Plus size={16} /> Add Food
-                </button>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                    <button className="btn ghost" onClick={() => setLibraryOpen(true)} title="My foods & meals">
+                        <ChefHat size={15} /> My Foods
+                    </button>
+                    <button className="btn primary" onClick={() => setAddOpen(true)} disabled={capabilities && !capabilities?.search}>
+                        <Plus size={16} /> Add Food
+                    </button>
+                </div>
             </div>
 
             {capabilities && !capabilities.configured && (
@@ -210,6 +219,26 @@ export default function Nutrition() {
                 </p>
             </div>
 
+            {/* ---- two logging entry points (Part 1) ---- */}
+            <div className="nutrition-entries">
+                <button className="card nutrition-entry" onClick={() => setAddOpen(true)} disabled={capabilities && !capabilities?.search}>
+                    <span className="nutrition-entry-icon"><Search size={18} /></span>
+                    <span className="nutrition-entry-body">
+                        <span className="nutrition-entry-title">Search & quick add</span>
+                        <span className="hint">Find a food — pazham pori, chicken biryani, protein oats — pick the portion, log it.</span>
+                    </span>
+                    <ChevronRight size={16} className="nutrition-entry-chevron" />
+                </button>
+                <button className="card nutrition-entry" onClick={() => setBuilderOpen(true)} disabled={capabilities && !capabilities?.search}>
+                    <span className="nutrition-entry-icon"><Layers size={18} /></span>
+                    <span className="nutrition-entry-body">
+                        <span className="nutrition-entry-title">Build a meal</span>
+                        <span className="hint">Combine ingredients — oats + banana + peanut butter — and save the recipe to reuse.</span>
+                    </span>
+                    <ChevronRight size={16} className="nutrition-entry-chevron" />
+                </button>
+            </div>
+
             {loadError && (
                 <div className="card plain nutrition-notice" role="alert">
                     {loadError}{" "}
@@ -247,13 +276,31 @@ export default function Nutrition() {
                 </div>
             )}
 
-            {/* ---- add food modal (search / photo / barcode) ---- */}
+            {/* ---- search / quick-add modal ---- */}
             <AddFood
                 open={addOpen}
                 onClose={() => setAddOpen(false)}
                 date={date}
                 capabilities={capabilities}
                 onSaved={onSaved}
+            />
+
+            {/* ---- meal builder modal ---- */}
+            <MealBuilder
+                open={builderOpen}
+                onClose={() => setBuilderOpen(false)}
+                date={date}
+                capabilities={capabilities}
+                onSaved={() => load(date)}
+            />
+
+            {/* ---- my foods & meals library ---- */}
+            <FoodLibrary
+                open={libraryOpen}
+                onClose={() => setLibraryOpen(false)}
+                date={date}
+                capabilities={capabilities}
+                onLogged={onSaved}
             />
 
             {/* ---- edit meal modal ---- */}

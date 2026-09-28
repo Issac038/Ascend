@@ -205,7 +205,8 @@ async function main() {
         assert(c.search === true && c.foodDetails === true, "search + details available when the corpus is loaded");
         assert(c.provider === "usda-fdc-local", "provider is the local USDA corpus");
         assert(c.photo === false && c.labelScan === false, "photo/label honestly unavailable (no vision provider)");
-        assert(Number(c.corpusFoods) === 5, "corpus count is real, not hardcoded", `got ${c.corpusFoods}`);
+        // 5 seeded USDA-shaped rows + the Ascend seed rows merged at startup
+        assert(Number(c.corpusFoods) >= 5, "corpus count is real, not hardcoded", `got ${c.corpusFoods}`);
 
         // ---- search over the seeded corpus ----
         const s1 = await req("GET", "/api/nutrition/search?q=egg", { cookies: userA });

@@ -74,6 +74,9 @@ export function Modal({ open, onClose, title, subtitle, children, actions, large
                         <X size={18} />
                     </button>
                 </div>
+                {/* The body is its own scroll container on ALL viewports:
+                    header + actions stay fixed and never cover form fields,
+                    and the page behind never scrolls instead of the dialog. */}
                 <div className="modal-body">{children}</div>
                 {actions && <div className="modal-actions">{actions}</div>}
             </div>
@@ -177,9 +180,9 @@ export function ProgressBar({ value = 0, thin = false }) {
 }
 
 /* ---------------- Field ---------------- */
-export function Field({ label, children, hint }) {
+export function Field({ label, children, hint, style }) {
     return (
-        <div className="field">
+        <div className="field" style={style}>
             {label && <label>{label}</label>}
             {children}
             {hint && <span className="hint">{hint}</span>}
