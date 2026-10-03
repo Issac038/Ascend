@@ -230,3 +230,9 @@ opens to its shell instead of a blank page.
 | `client/` | `npm run dev` | Vite dev server with /api proxy |
 | `client/` | `npm run build` | Production frontend build |
 | `client/` | `npm run lint` | ESLint |
+
+
+# Test Account 
+
+Email - sam123@example.com
+Password - password123
