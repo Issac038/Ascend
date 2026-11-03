@@ -258,7 +258,7 @@ export default function Dashboard() {
                     <div className="card gym-dash-card">
                         <div className="row between" style={{ alignItems: "center" }}>
                             <div style={{ minWidth: 0 }}>
-                                <p className="hint" style={{ margin: 0 }}>TODAY'S WORKOUT</p>
+                                <p className="hint" style={{ margin: 0 }}>TODAY'S WORKOUT · FIXED 7-DAY PLAN</p>
                                 <h3 style={{ margin: "2px 0 0", overflowWrap: "anywhere" }}>{gymToday.session?.workoutName || gymToday.workout.name}</h3>
                             </div>
                             <Link to="/gym" className="btn primary small" style={{ flexShrink: 0 }}>
@@ -268,7 +268,11 @@ export default function Dashboard() {
                         <div style={{ marginTop: 10 }}>
                             <ProgressBar value={gymToday.progress?.pct || 0} thin />
                             <div className="row between hint" style={{ marginTop: 5 }}>
-                                <span>{gymToday.progress?.done || 0} / {gymToday.progress?.total || 0} exercises</span>
+                                <span>
+                                    {(gymToday.progress?.total || 0) > 0
+                                        ? `${gymToday.progress.done} / ${gymToday.progress.total} sets`
+                                        : "Cardio session — no strength sets"}
+                                </span>
                                 <span className="mono-num">{gymToday.progress?.pct || 0}%</span>
                             </div>
                         </div>

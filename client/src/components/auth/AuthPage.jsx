@@ -98,7 +98,7 @@ export default function AuthPage() {
                         <form onSubmit={submit}>
                             {mode === "register" && (
                                 <Field label="Name">
-                                    <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Issac" autoComplete="name" required />
+                                    <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" autoComplete="name" required />
                                 </Field>
                             )}
                             <Field label="Email">

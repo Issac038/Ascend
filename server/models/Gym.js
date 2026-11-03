@@ -137,10 +137,96 @@ const workoutSessionSchema = new mongoose.Schema(
 
 workoutSessionSchema.index({ userId: 1, date: 1 }, { unique: true });
 
+// ------------------------------------------------------------
+// FIXED-PLAN SESSION LOGS
+//
+// The weekly split now lives ONLY in code (server/plan/fixedPlan.js).
+// Nothing here stores the template — sessions reference stable
+// exercise ids and prescribed set numbers, and the server resolves
+// names/set counts/rep ranges from the canonical plan on read.
+//
+//   PlanSession — one doc per (user, date): the session-level
+//                 alternative choice, cardio log, completion state.
+//   SetLog      — one doc per (user, date, exercise, set): actual
+//                 weight / reps / duration + completion. Sparse:
+//                 a set only exists once the user touched it.
+//
+// Both are new collections; the legacy Workout/WeeklyPlan/
+// WorkoutSession models above stay untouched so existing workout
+// history remains readable.
+// ------------------------------------------------------------
+
+const planSessionSchema = new mongoose.Schema(
+    {
+        userId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User",
+            required: true
+        },
+        date: { type: String, required: true, maxlength: 10 }, // YYYY-MM-DD (local date key)
+        planDay: { type: Number, required: true, min: 1, max: 7 }, // which fixed day this date maps to
+
+        // slotId -> optionId. Server-validated against the canonical
+        // plan's prescribed alternatives (never an arbitrary exercise).
+        choices: { type: Map, of: String, default: () => ({}) },
+
+        cardio: {
+            distanceKm: { type: Number, default: null, min: 0, max: 500 },
+            durationMin: { type: Number, default: null, min: 0, max: 1440 },
+            notes: { type: String, default: "", maxlength: 500 },
+            completed: { type: Boolean, default: false },
+            loggedAt: { type: Date, default: null }
+        },
+
+        // set when every prescribed set of that date is complete (or the
+        // cardio session is marked done); per-DATE state, never template state
+        completedAt: { type: Date, default: null },
+        notes: { type: String, default: "", maxlength: 500 }
+    },
+    { timestamps: true }
+);
+
+// Hard guarantee against duplicate sessions from rapid taps / repeated requests.
+planSessionSchema.index({ userId: 1, date: 1 }, { unique: true });
+planSessionSchema.index({ userId: 1, planDay: 1, date: -1 });
+
+const setLogSchema = new mongoose.Schema(
+    {
+        userId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User",
+            required: true
+        },
+        date: { type: String, required: true, maxlength: 10 },
+        planDay: { type: Number, required: true, min: 1, max: 7 },
+
+        // Stable exercise id from the canonical plan (server-resolved;
+        // a crafted client payload can only reference real exercises).
+        exId: { type: String, required: true, maxlength: 64 },
+        setNo: { type: Number, required: true, min: 1, max: 30 },
+
+        // Actual performance. Empty (null) values are allowed while a set
+        // is incomplete. Bodyweight/duration exercises never store weight.
+        weightKg: { type: Number, default: null, min: 0, max: 1000 },
+        reps: { type: Number, default: null, min: 1, max: 999 },
+        durationSec: { type: Number, default: null, min: 1, max: 7200 },
+
+        completed: { type: Boolean, default: false },
+        completedAt: { type: Date, default: null }
+    },
+    { timestamps: true }
+);
+
+// Duplicate-proof: one log per (user, date, exercise, set), ever.
+setLogSchema.index({ userId: 1, date: 1, exId: 1, setNo: 1 }, { unique: true });
+setLogSchema.index({ userId: 1, planDay: 1, date: -1, exId: 1 });
+
 module.exports = {
     Workout: mongoose.model("Workout", workoutSchema),
     WeeklyPlan: mongoose.model("WeeklyPlan", weeklyPlanSchema),
     WorkoutSession: mongoose.model("WorkoutSession", workoutSessionSchema),
+    PlanSession: mongoose.model("PlanSession", planSessionSchema),
+    SetLog: mongoose.model("SetLog", setLogSchema),
     DAY_KEYS,
     EXERCISE_TYPES
 };

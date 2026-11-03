@@ -1,18 +1,50 @@
 const express = require("express");
 
 const auth = require("../middleware/auth");
-const { todayKeyFor, isValidDateKey, dayOfWeek, addDays, startOfWeek, eachDay } = require("../utils/date");
+const { todayKeyFor, isValidDateKey, dayOfWeek, startOfWeek, eachDay, addDays } = require("../utils/date");
 const User = require("../models/User");
-const { Workout, WeeklyPlan, WorkoutSession, DAY_KEYS, EXERCISE_TYPES } = require("../models/Gym");
+const { Workout, WorkoutSession, PlanSession, SetLog } = require("../models/Gym");
+const plan = require("../plan/fixedPlan");
 
 const router = express.Router();
 
-// JS getDay(): 0=Sunday ... 6=Saturday -> our mon..sun keys
+// JS getDay(): 0=Sunday ... 6=Saturday -> mon..sun keys (weekday labels only)
 const DOW_TO_KEY = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
-function validIdOr400(id) {
-    return /^[0-9a-fA-F]{24}$/.test(String(id || ""));
+// ============================================================
+// THE PLAN IS FIXED — builder endpoints are locked.
+//
+// The old workout-builder API (create/edit/delete workouts, edit the
+// weekly plan, toggle exercise snapshots) is replaced by the canonical
+// plan in plan/fixedPlan.js. These handlers stay registered so stale
+// clients get a clear, honest error instead of a silent 404 — they can
+// never modify the plan. GET endpoints that still serve historical
+// data remain read-only.
+// ============================================================
+function planFixed(req, res) {
+    res.status(403).json({
+        success: false,
+        code: "PLAN_FIXED",
+        message: "The workout plan is fixed and cannot be changed."
+    });
 }
+
+function legacyFlowGone(req, res) {
+    res.status(410).json({
+        success: false,
+        code: "PLAN_FIXED",
+        message: "The workout builder was replaced by the fixed 7-day tracker."
+    });
+}
+
+router.put("/plan", auth, planFixed);
+router.post("/workouts", auth, planFixed);
+router.patch("/workouts/:id", auth, planFixed);
+router.delete("/workouts/:id", auth, planFixed);
+router.post("/sessions/:date/toggle", auth, legacyFlowGone);
+router.post("/sessions/:date/refresh", auth, legacyFlowGone);
+
+// ---------- helpers ----------
 
 const TZ_CACHE = new Map();
 const TZ_TTL_MS = 30 * 1000;
@@ -25,290 +57,322 @@ async function userTzOffset(userId) {
     return tz;
 }
 
-// ---------- helpers ----------
-
-function normalizeKey(name) {
-    return String(name || "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+// Resolve which date a request is about. Explicit date keys (validated)
+// win; otherwise fall back to the user's timezone "today" (legacy calls
+// such as the Dashboard's /gym/today).
+async function resolveDate(req, fromParams = true) {
+    const raw = (fromParams ? req.params.date : null) || req.query.date;
+    if (raw !== undefined && raw !== null && raw !== "") {
+        if (!isValidDateKey(raw)) return { error: "Invalid date" };
+        return { date: raw };
+    }
+    const tz = await userTzOffset(req.userId);
+    return { date: todayKeyFor(tz) };
 }
 
-function exerciseDetail(ex) {
-    if (ex.type === "duration") {
-        const per = ex.durationSec >= 60 ? `${Math.round(ex.durationSec / 60)} min` : `${ex.durationSec} sec`;
-        return ex.sets > 1 ? `${ex.sets} × ${per}` : per;
+// Optional numeric field: empty (undefined/null/"") is always allowed and
+// stores null; provided values must be finite numbers inside range.
+// Booleans/arrays/objects are rejected outright.
+function parseNumber(raw, { min, max, integer = false, label }) {
+    if (raw === undefined || raw === null || raw === "") return { value: null };
+    if (typeof raw !== "number" && typeof raw !== "string") {
+        return { error: `${label} must be a number` };
     }
-    return `${ex.sets} × ${ex.reps ?? "?"}`;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return { error: `${label} must be a number` };
+    if (integer && !Number.isInteger(n)) return { error: `${label} must be a whole number` };
+    if (n < min || n > max) return { error: `${label} must be between ${min} and ${max}` };
+    return { value: n };
 }
 
-function validateExercises(raw) {
-    if (!Array.isArray(raw)) return { error: "exercises must be an array" };
-    if (raw.length > 40) return { error: "A workout can have at most 40 exercises" };
-    const out = [];
-    for (const e of raw) {
-        const name = String((e && e.name) || "").trim().slice(0, 80);
-        if (!name) return { error: "Every exercise needs a name" };
-        const type = EXERCISE_TYPES.includes(e.type) ? e.type : "reps";
-        const sets = Math.min(30, Math.max(1, Math.round(Number(e.sets) || 1)));
-        const item = { name, type, sets, notes: String(e.notes || "").slice(0, 200) };
-
-        if (type === "duration") {
-            const sec = Math.round(Number(e.durationSec));
-            if (!Number.isFinite(sec) || sec < 1 || sec > 14400) {
-                return { error: `"${name}": duration must be 1 second – 4 hours` };
-            }
-            item.durationSec = sec;
-            item.reps = null;
-        } else {
-            const reps = Math.round(Number(e.reps));
-            if (!Number.isFinite(reps) || reps < 1 || reps > 1000) {
-                return { error: `"${name}": reps must be 1–1000` };
-            }
-            item.reps = reps;
-            item.durationSec = null;
-        }
-        if (e.restSec !== undefined && e.restSec !== null && e.restSec !== "") {
-            const rest = Math.round(Number(e.restSec));
-            if (!Number.isFinite(rest) || rest < 0 || rest > 1200) return { error: `"${name}": invalid rest time` };
-            item.restSec = rest;
-        }
-        if (e.weightKg !== undefined && e.weightKg !== null && e.weightKg !== "") {
-            const w = Number(e.weightKg);
-            if (!Number.isFinite(w) || w < 0 || w > 1000) return { error: `"${name}": invalid target weight` };
-            item.weightKg = w;
-        }
-        out.push(item);
-    }
-    // Data integrity: duplicate exercise names would collide in session
-    // snapshot keys (toggle works per normalized name), so later repeats are
-    // dropped. First occurrence wins and order is preserved.
-    const seen = new Set();
-    const deduped = [];
-    for (const e of out) {
-        const k = e.name.trim().toLowerCase().replace(/\s+/g, " ");
-        if (!seen.has(k)) {
-            seen.add(k);
-            deduped.push(e);
-        }
-    }
-    return { exercises: deduped };
+function parseBoolean(raw, label) {
+    if (raw === undefined) return { value: undefined };
+    if (typeof raw !== "boolean") return { error: `${label} must be true or false` };
+    return { value: raw };
 }
 
-function progressOf(sessionOrExercises) {
-    const exercises = Array.isArray(sessionOrExercises) ? sessionOrExercises : sessionOrExercises.exercises;
+// Create-on-write session meta (reads never create documents).
+async function ensurePlanSession(userId, date, planDay) {
+    try {
+        return await PlanSession.create({ userId, date, planDay });
+    } catch (e) {
+        if (e && e.code === 11000) {
+            // Concurrent first write (rapid taps / two tabs) — unique index did its job.
+            return PlanSession.findOne({ userId, date });
+        }
+        throw e;
+    }
+}
+
+async function storedChoices(userId, date, day) {
+    const ps = await PlanSession.findOne({ userId, date }).select("choices");
+    const raw = ps && ps.choices ? Object.fromEntries(ps.choices) : {};
+    return plan.normalizeChoices(day, raw);
+}
+
+// Idempotent upsert of one set log. Re-sending the same payload is a
+// no-op update on the same unique (user, date, exercise, set) document.
+async function upsertSetLog(userId, date, planDay, exId, setNo, fields) {
+    const filter = { userId, date, exId, setNo };
+    try {
+        return await SetLog.findOneAndUpdate(
+            filter,
+            { $set: { planDay, ...fields } },
+            { upsert: true, new: true, runValidators: true }
+        );
+    } catch (e) {
+        if (e && e.code === 11000) {
+            // Lost an upsert race — the doc exists now; apply as a plain update.
+            await SetLog.updateOne(filter, { $set: { planDay, ...fields } }, { runValidators: true });
+            return SetLog.findOne(filter);
+        }
+        throw e;
+    }
+}
+
+// Session completion state — recomputed from this date's logs only.
+// Never touches the template, never touches other dates.
+async function refreshCompletion(userId, date, day, choices) {
+    const resolved = plan.resolveExercises(day, choices);
+    const total = plan.totalSets(day, choices);
+    let done = 0;
+    if (total > 0) {
+        done = await SetLog.countDocuments({
+            userId,
+            date,
+            completed: true,
+            exId: { $in: resolved.map((e) => e.id) }
+        });
+    }
+    let allDone = total > 0 && done === total;
+    if (total === 0 && day.cardio && day.cardio.loggable) {
+        const ps = await PlanSession.findOne({ userId, date }).select("cardio.completed");
+        allDone = !!(ps && ps.cardio && ps.cardio.completed);
+    }
+    await PlanSession.updateOne({ userId, date }, { $set: { completedAt: allDone ? new Date() : null } });
+    return { done, total, pct: total ? Math.round((done / total) * 100) : (allDone ? 100 : 0) };
+}
+
+function sessionView(ps, day, progress) {
+    const cardio = (ps && ps.cardio) || {};
+    return {
+        date: ps ? ps.date : null,
+        planDay: day.day,
+        workoutName: plan.displayTitle(day),
+        choices: ps && ps.choices ? Object.fromEntries(ps.choices) : plan.defaultChoices(day),
+        cardio: {
+            distanceKm: cardio.distanceKm ?? null,
+            durationMin: cardio.durationMin ?? null,
+            notes: cardio.notes || "",
+            completed: !!cardio.completed,
+            loggedAt: cardio.loggedAt || null
+        },
+        completed: !!(ps && ps.completedAt),
+        completedAt: (ps && ps.completedAt) || null
+    };
+}
+
+// Full day payload shared by GET /today, GET /sessions/:date and the
+// write endpoints' responses (so the client always reconciles from truth).
+async function buildDayPayload(userId, date) {
+    const dayNum = plan.planDayForDate(date);
+    const day = plan.getDay(dayNum);
+    const weekdayKey = DOW_TO_KEY[dayOfWeek(date)];
+
+    if (day.rest) {
+        const legacy = await WorkoutSession.findOne({ userId, date })
+            .select("workoutName exercises completedAt")
+            .lean();
+        return {
+            success: true,
+            date,
+            weekdayKey,
+            dayNumber: dayNum,
+            restDay: true,
+            day: plan.dayView(day, {}),
+            workout: null,
+            session: null,
+            progress: { done: 0, total: 0, pct: 0 },
+            previous: { sets: {}, cardio: null },
+            legacy: legacy ? legacySummary(legacy) : null
+        };
+    }
+
+    const ps = await PlanSession.findOne({ userId, date });
+    const choices = plan.normalizeChoices(day, ps && ps.choices ? Object.fromEntries(ps.choices) : {});
+    const dayInfo = plan.dayView(day, choices);
+
+    const logs = await SetLog.find({ userId, date });
+    const logMap = new Map(logs.map((l) => [`${l.exId}#${l.setNo}`, l]));
+
+    let done = 0;
+    dayInfo.exercises = dayInfo.exercises.map((ex) => {
+        const entries = [];
+        for (let n = 1; n <= ex.sets; n += 1) {
+            const l = logMap.get(`${ex.id}#${n}`);
+            const completed = !!(l && l.completed);
+            if (completed) done += 1;
+            entries.push({
+                setNo: n,
+                weightKg: l ? l.weightKg : null,
+                reps: l ? l.reps : null,
+                durationSec: l ? l.durationSec : null,
+                completed
+            });
+        }
+        return { ...ex, entries };
+    });
+
+    const total = dayInfo.totalSets;
+    const cardioDone = !!(ps && ps.cardio && ps.cardio.completed);
+    const pct = total ? Math.round((done / total) * 100) : (cardioDone ? 100 : 0);
+
+    // Previous-session reference: same fixed day, earlier dates only.
+    const prevLogs = await SetLog.find({
+        userId,
+        planDay: dayNum,
+        date: { $lt: date },
+        exId: { $in: dayInfo.exercises.map((e) => e.id) }
+    }).sort({ date: -1 }).limit(400);
+    const prevSets = {};
+    for (const l of prevLogs) {
+        const k = `${l.exId}#${l.setNo}`;
+        if (!prevSets[k]) {
+            prevSets[k] = {
+                date: l.date,
+                weightKg: l.weightKg,
+                reps: l.reps,
+                durationSec: l.durationSec,
+                completed: l.completed
+            };
+        }
+    }
+    let prevCardio = null;
+    const prevSessions = await PlanSession.find({ userId, planDay: dayNum, date: { $lt: date } })
+        .sort({ date: -1 })
+        .limit(6)
+        .select("date cardio");
+    for (const s of prevSessions) {
+        const c = s.cardio || {};
+        if (c.distanceKm != null || c.durationMin != null || c.completed) {
+            prevCardio = { date: s.date, distanceKm: c.distanceKm ?? null, durationMin: c.durationMin ?? null, completed: !!c.completed };
+            break;
+        }
+    }
+
+    const legacy = await WorkoutSession.findOne({ userId, date })
+        .select("workoutName exercises completedAt")
+        .lean();
+
+    const progress = { done, total, pct };
+    return {
+        success: true,
+        date,
+        weekdayKey,
+        dayNumber: dayNum,
+        restDay: false,
+        day: dayInfo,
+        workout: { _id: null, name: plan.displayTitle(day) },
+        session: sessionView(ps, day, progress),
+        progress,
+        previous: { sets: prevSets, cardio: prevCardio },
+        legacy: legacy ? legacySummary(legacy) : null
+    };
+}
+
+// Legacy builder-era session, kept as read-only historical context.
+function legacySummary(s) {
+    const exercises = Array.isArray(s.exercises) ? s.exercises : [];
     const total = exercises.length;
     const done = exercises.filter((x) => x.done).length;
-    return { done, total, pct: total ? Math.round((done / total) * 100) : 0 };
-}
-
-function sessionView(s) {
-    const p = progressOf(s);
     return {
-        _id: s._id,
+        legacy: true,
         date: s.date,
-        workoutId: s.workoutId,
         workoutName: s.workoutName,
-        exercises: s.exercises.map((x) => ({ key: x.key, name: x.name, detail: x.detail, done: x.done })),
-        done: p.done,
-        total: p.total,
-        pct: p.pct,
-        completed: p.total > 0 && p.done === p.total,
+        done,
+        total,
+        pct: total ? Math.round((done / total) * 100) : 0,
+        completed: !!(s.completedAt),
         completedAt: s.completedAt || null
     };
 }
 
-function workoutView(w) {
-    return {
-        _id: w._id,
-        name: w.name,
-        notes: w.notes || "",
-        exercises: (w.exercises || []).map((ex) => ({
-            name: ex.name,
-            type: ex.type,
-            sets: ex.sets,
-            reps: ex.reps,
-            durationSec: ex.durationSec,
-            restSec: ex.restSec ?? null,
-            weightKg: ex.weightKg ?? null,
-            notes: ex.notes || "",
-            detail: exerciseDetail(ex)
-        }))
-    };
-}
-
-function snapshotExercises(workout) {
-    return (workout.exercises || []).map((ex) => ({
-        key: normalizeKey(ex.name),
-        name: ex.name,
-        detail: exerciseDetail(ex),
-        done: false,
-        doneAt: null
-    }));
-}
-
-async function getOrCreatePlan(userId) {
-    // Atomic upsert: concurrent first loads (double-mount, two tabs) must not
-    // race findOne->create into a duplicate-key error on the unique index.
-    return WeeklyPlan.findOneAndUpdate(
-        { userId },
-        { $setOnInsert: { userId, days: {} } },
-        { upsert: true, new: true }
-    );
-}
-
-// The workout scheduled on a given date for this user (or null = rest day).
-async function scheduledWorkout(userId, dateKey) {
-    const plan = await getOrCreatePlan(userId);
-    const key = DOW_TO_KEY[dayOfWeek(dateKey)];
-    const entry = plan.days.get(key);
-    if (!entry || !entry.workoutId) return { plan, key, workout: null };
-    const workout = await Workout.findOne({ _id: entry.workoutId, userId });
-    return { plan, key, workout: workout || null }; // deleted workout -> rest day
-}
-
-// Find or create the per-date session, snapshotting the workout at first check-in.
-async function ensureSession(userId, dateKey, workout) {
-    let s = await WorkoutSession.findOne({ userId, date: dateKey });
-    if (s) return s;
-    return WorkoutSession.create({
-        userId,
-        date: dateKey,
-        workoutId: workout._id,
-        workoutName: workout.name,
-        exercises: snapshotExercises(workout)
-    });
-}
+// ============================================================
+// CANONICAL PLAN (read-only)
+// ============================================================
+router.get("/plan", auth, async (req, res) => {
+    try {
+        res.json({ success: true, plan: plan.publicPlan() });
+    } catch (e) {
+        res.status(500).json({ success: false, message: "Failed to load the workout plan" });
+    }
+});
 
 // ============================================================
-// TODAY
+// TODAY / DAY VIEW
 // ============================================================
 router.get("/today", auth, async (req, res) => {
     try {
-        const tz = await userTzOffset(req.userId);
-        const date = todayKeyFor(tz);
-        const weekdayKey = DOW_TO_KEY[dayOfWeek(date)];
-
-        const { workout } = await scheduledWorkout(req.userId, date);
-        if (!workout) {
-            return res.json({
-                success: true,
-                date,
-                weekdayKey,
-                restDay: true,
-                workout: null,
-                session: null,
-                progress: { done: 0, total: 0, pct: 0 }
-            });
-        }
-
-        const existing = await WorkoutSession.findOne({ userId: req.userId, date });
-        // View-only until the first check-in — no document is created just by visiting.
-        const p = existing
-            ? progressOf(existing)
-            : { done: 0, total: workout.exercises.length, pct: 0 };
-
-        res.json({
-            success: true,
-            date,
-            weekdayKey,
-            restDay: false,
-            workout: workoutView(workout),
-            session: existing ? sessionView(existing) : null,
-            progress: p
-        });
+        const r = await resolveDate(req, false);
+        if (r.error) return res.status(400).json({ success: false, message: r.error });
+        res.json(await buildDayPayload(req.userId, r.date));
     } catch (e) {
         res.status(500).json({ success: false, message: "Failed to load today's workout" });
     }
 });
 
-// ============================================================
-// WEEKLY PLAN + WEEK OVERVIEW
-// ============================================================
-router.get("/plan", auth, async (req, res) => {
+router.get("/sessions/:date", auth, async (req, res) => {
     try {
-        const plan = await getOrCreatePlan(req.userId);
-        const workouts = await Workout.find({ userId: req.userId }).sort({ updatedAt: -1 });
-        res.json({
-            success: true,
-            plan: { days: Object.fromEntries(plan.days) },
-            workouts: workouts.map(workoutView)
-        });
+        const r = await resolveDate(req, true);
+        if (r.error) return res.status(400).json({ success: false, message: r.error });
+        res.json(await buildDayPayload(req.userId, r.date));
     } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to load plan" });
+        res.status(500).json({ success: false, message: "Failed to load that workout day" });
     }
 });
 
-router.put("/plan", auth, async (req, res) => {
-    try {
-        const days = req.body.days;
-        if (!days || typeof days !== "object" || Array.isArray(days)) {
-            return res.status(400).json({ success: false, message: "days object is required" });
-        }
-        for (const key of Object.keys(days)) {
-            if (!DAY_KEYS.includes(key)) {
-                return res.status(400).json({ success: false, message: `Invalid weekday: ${key}` });
-            }
-        }
-
-        // Collect referenced workout ids and verify each belongs to this user.
-        const ids = [...new Set(Object.values(days).filter(Boolean).map(String))];
-        for (const id of ids) {
-            if (!validIdOr400(id)) return res.status(400).json({ success: false, message: "Invalid workout id" });
-        }
-        if (ids.length) {
-            const owned = await Workout.countDocuments({ _id: { $in: ids }, userId: req.userId });
-            if (owned !== ids.length) {
-                return res.status(404).json({ success: false, message: "One or more workouts were not found" });
-            }
-        }
-
-        const plan = await getOrCreatePlan(req.userId);
-        const next = {};
-        for (const key of DAY_KEYS) next[key] = days[key] ? { workoutId: days[key] } : { workoutId: null };
-        plan.days = next;
-        await plan.save();
-        res.json({ success: true, plan: { days: Object.fromEntries(plan.days) } });
-    } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to save plan" });
-    }
-});
-
-// Week overview: plan + completion for each day of the week containing `start`.
+// ============================================================
+// WEEK OVERVIEW — fixed day per date, set progress per date.
+// ============================================================
 router.get("/week", auth, async (req, res) => {
     try {
         const tz = await userTzOffset(req.userId);
         const anchor = isValidDateKey(req.query.start) ? req.query.start : todayKeyFor(tz);
+        const today = isValidDateKey(req.query.today) ? req.query.today : todayKeyFor(tz);
         const start = startOfWeek(anchor);
         const dates = eachDay(start, addDays(start, 6));
 
-        const plan = await getOrCreatePlan(req.userId);
-        const sessions = await WorkoutSession.find({ userId: req.userId, date: { $in: dates } });
-        const byDate = new Map(sessions.map((s) => [s.date, s]));
-
-        // Resolve referenced workouts once.
-        const wIds = [...new Set(dates.map((d) => {
-            const entry = plan.days.get(DOW_TO_KEY[dayOfWeek(d)]);
-            return entry && entry.workoutId ? String(entry.workoutId) : null;
-        }).filter(Boolean))];
-        const workouts = wIds.length
-            ? await Workout.find({ _id: { $in: wIds }, userId: req.userId }).select("name")
-            : [];
-        const wNames = new Map(workouts.map((w) => [String(w._id), w.name]));
+        const [logs, sessions] = await Promise.all([
+            SetLog.find({ userId: req.userId, date: { $in: dates }, completed: true })
+                .select("date exId"),
+            PlanSession.find({ userId: req.userId, date: { $in: dates } })
+                .select("date planDay choices cardio completedAt")
+        ]);
+        const sessionsByDate = new Map(sessions.map((s) => [s.date, s]));
 
         const days = dates.map((date) => {
-            const entry = plan.days.get(DOW_TO_KEY[dayOfWeek(date)]);
-            const workoutId = entry && entry.workoutId ? String(entry.workoutId) : null;
-            const s = byDate.get(date);
-            const p = s ? progressOf(s) : null;
+            const dayNum = plan.planDayForDate(date);
+            const day = plan.getDay(dayNum);
+            const ps = sessionsByDate.get(date);
+            const choices = plan.normalizeChoices(day, ps && ps.choices ? Object.fromEntries(ps.choices) : {});
+            const total = plan.totalSets(day, choices);
+            const ids = new Set(plan.resolveExercises(day, choices).map((e) => e.id));
+            const done = logs.filter((l) => l.date === date && ids.has(l.exId)).length;
+            const cardioDone = !!(ps && ps.cardio && ps.cardio.completed);
             return {
                 date,
                 weekdayKey: DOW_TO_KEY[dayOfWeek(date)],
-                restDay: !workoutId,
-                workoutName: workoutId ? (wNames.get(workoutId) || null) : null,
-                scheduled: !!workoutId,
-                done: p ? p.done : 0,
-                total: p ? p.total : 0,
-                pct: p ? p.pct : null, // null = not started
-                completed: s ? p.total > 0 && p.done === p.total : false,
-                isToday: date === todayKeyFor(tz)
+                dayNumber: dayNum,
+                title: day.title,
+                workoutName: plan.displayTitle(day),
+                restDay: day.rest,
+                scheduled: true,
+                done,
+                total,
+                pct: total ? Math.round((done / total) * 100) : (cardioDone ? 100 : null),
+                completed: ps ? !!ps.completedAt : false,
+                cardioDone,
+                isToday: date === today
             };
         });
 
@@ -319,212 +383,257 @@ router.get("/week", auth, async (req, res) => {
 });
 
 // ============================================================
-// WORKOUTS (CRUD)
+// SESSION WRITES — per-set logging (idempotent, ownership-scoped)
 // ============================================================
-router.get("/workouts", auth, async (req, res) => {
+router.post("/sessions/:date/set", auth, async (req, res) => {
     try {
-        const workouts = await Workout.find({ userId: req.userId }).sort({ updatedAt: -1 });
-        res.json({ success: true, workouts: workouts.map(workoutView) });
-    } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to load workouts" });
-    }
-});
+        const r = await resolveDate(req, true);
+        if (r.error) return res.status(400).json({ success: false, message: r.error });
+        const date = r.date;
 
-router.post("/workouts", auth, async (req, res) => {
-    try {
-        const name = String(req.body.name || "").trim().slice(0, 60);
-        if (!name) return res.status(400).json({ success: false, message: "Workout name is required" });
-        const v = validateExercises(req.body.exercises);
-        if (v.error) return res.status(400).json({ success: false, message: v.error });
-
-        const workout = await Workout.create({
-            userId: req.userId,
-            name,
-            notes: String(req.body.notes || "").slice(0, 500),
-            exercises: v.exercises
-        });
-        res.status(201).json({ success: true, workout: workoutView(workout) });
-    } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to create workout" });
-    }
-});
-
-router.patch("/workouts/:id", auth, async (req, res) => {
-    try {
-        if (!validIdOr400(req.params.id)) return res.status(400).json({ success: false, message: "Invalid id" });
-        const workout = await Workout.findOne({ _id: req.params.id, userId: req.userId });
-        if (!workout) return res.status(404).json({ success: false, message: "Workout not found" });
-
-        if (req.body.name !== undefined) {
-            const name = String(req.body.name).trim().slice(0, 60);
-            if (!name) return res.status(400).json({ success: false, message: "Workout name cannot be empty" });
-            workout.name = name;
-        }
-        if (req.body.notes !== undefined) workout.notes = String(req.body.notes).slice(0, 500);
-        if (req.body.exercises !== undefined) {
-            const v = validateExercises(req.body.exercises);
-            if (v.error) return res.status(400).json({ success: false, message: v.error });
-            workout.exercises = v.exercises;
-        }
-        await workout.save();
-        res.json({ success: true, workout: workoutView(workout) });
-    } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to update workout" });
-    }
-});
-
-router.delete("/workouts/:id", auth, async (req, res) => {
-    try {
-        if (!validIdOr400(req.params.id)) return res.status(400).json({ success: false, message: "Invalid id" });
-        const workout = await Workout.findOneAndDelete({ _id: req.params.id, userId: req.userId });
-        if (!workout) return res.status(404).json({ success: false, message: "Workout not found" });
-
-        // Clear plan references (those days become rest days).
-        const plan = await WeeklyPlan.findOne({ userId: req.userId });
-        if (plan) {
-            let changed = false;
-            for (const key of plan.days.keys()) {
-                const entry = plan.days.get(key);
-                if (entry && entry.workoutId && String(entry.workoutId) === String(workout._id)) {
-                    plan.days.set(key, { workoutId: null });
-                    changed = true;
-                }
-            }
-            if (changed) await plan.save();
+        const dayNum = plan.planDayForDate(date);
+        const day = plan.getDay(dayNum);
+        if (day.rest) {
+            return res.status(400).json({ success: false, code: "REST_DAY", message: "Rest day — nothing to log." });
         }
 
-        // Sessions keep their snapshot (history stays truthful) — only the
-        // dangling workoutId reference is nulled.
-        await WorkoutSession.updateMany(
-            { userId: req.userId, workoutId: workout._id },
-            { $set: { workoutId: null } }
-        );
-        res.json({ success: true });
-    } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to delete workout" });
-    }
-});
+        const body = req.body || {};
+        const exId = typeof body.exId === "string" ? body.exId.trim() : "";
+        if (!exId || exId.length > 64) {
+            return res.status(400).json({ success: false, message: "A valid exercise id is required" });
+        }
+        const setNo = Number(body.setNo);
+        if (!Number.isInteger(setNo) || setNo < 1 || setNo > 30) {
+            return res.status(400).json({ success: false, message: "setNo must be a positive whole number" });
+        }
 
-// ============================================================
-// SESSIONS — check/uncheck + per-day view
-// ============================================================
-router.get("/sessions/:date", auth, async (req, res) => {
-    try {
-        const date = req.params.date;
-        if (!isValidDateKey(date)) return res.status(400).json({ success: false, message: "Invalid date" });
-
-        const { workout } = await scheduledWorkout(req.userId, date);
-        const existing = await WorkoutSession.findOne({ userId: req.userId, date });
-
-        if (!workout) {
-            return res.json({
-                success: true, date, restDay: true,
-                workout: null,
-                session: existing ? sessionView(existing) : null, // orphaned snapshot (workout deleted)
-                progress: existing ? progressOf(existing) : { done: 0, total: 0, pct: 0 }
+        // Resolve the exercise from the CANONICAL plan for this date.
+        // Crafted payloads can only ever reference real prescribed sets.
+        const choices = await storedChoices(req.userId, date, day);
+        const resolved = plan.resolveExercises(day, choices);
+        const ex = plan.findExercise(resolved, exId);
+        if (!ex) {
+            return res.status(400).json({
+                success: false,
+                message: "That exercise is not part of this day's fixed plan"
             });
         }
-        const p = existing ? progressOf(existing) : { done: 0, total: workout.exercises.length, pct: 0 };
-        res.json({
-            success: true, date, restDay: false,
-            workout: workoutView(workout),
-            session: existing ? sessionView(existing) : null,
-            progress: p
-        });
-    } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to load workout day" });
-    }
-});
-
-// Toggle one exercise for a date. Creates the session snapshot on first check-in.
-router.post("/sessions/:date/toggle", auth, async (req, res) => {
-    try {
-        const date = req.params.date;
-        if (!isValidDateKey(date)) return res.status(400).json({ success: false, message: "Invalid date" });
-        const key = normalizeKey(req.body.key);
-        if (!key) return res.status(400).json({ success: false, message: "Exercise key is required" });
-
-        const { workout } = await scheduledWorkout(req.userId, date);
-        if (!workout) {
-            return res.status(400).json({ success: false, message: "Rest day — nothing to check off", code: "REST_DAY" });
+        if (setNo > ex.sets) {
+            return res.status(400).json({
+                success: false,
+                message: `${ex.name} prescribes ${ex.sets} set${ex.sets === 1 ? "" : "s"}`
+            });
         }
 
-        const session = await ensureSession(req.userId, date, workout);
-        const ex = session.exercises.find((x) => x.key === key);
-        if (!ex) return res.status(404).json({ success: false, message: "Exercise not found in this workout" });
+        const fields = {};
+        const completed = parseBoolean(body.completed, "completed");
+        if (completed.error) return res.status(400).json({ success: false, message: completed.error });
+        if (completed.value !== undefined) {
+            fields.completed = completed.value;
+            fields.completedAt = completed.value ? new Date() : null;
+        }
 
-        ex.done = !ex.done;
-        ex.doneAt = ex.done ? new Date() : null;
+        if (ex.metric === "duration") {
+            const d = parseNumber(body.durationSec, { min: 1, max: 7200, integer: true, label: "duration (seconds)" });
+            if (d.error) return res.status(400).json({ success: false, message: d.error });
+            fields.durationSec = d.value;
+            fields.reps = null;
+            fields.weightKg = null; // bodyweight/duration exercises never require weight
+        } else {
+            const rep = parseNumber(body.reps, { min: 1, max: 999, integer: true, label: "reps" });
+            if (rep.error) return res.status(400).json({ success: false, message: rep.error });
+            fields.reps = rep.value;
+            fields.durationSec = null;
+            if (ex.bodyweight) {
+                fields.weightKg = null;
+            } else {
+                const w = parseNumber(body.weightKg, { min: 0, max: 1000, label: "weight" });
+                if (w.error) return res.status(400).json({ success: false, message: w.error });
+                fields.weightKg = w.value;
+            }
+        }
 
-        const p = progressOf(session);
-        session.completedAt = p.total > 0 && p.done === p.total ? new Date() : null;
-        await session.save();
+        await ensurePlanSession(req.userId, date, dayNum);
+        const saved = await upsertSetLog(req.userId, date, dayNum, exId, setNo, fields);
+        const progress = await refreshCompletion(req.userId, date, day, choices);
+        const ps = await PlanSession.findOne({ userId: req.userId, date });
 
-        res.json({ success: true, session: sessionView(session) });
+        // Echo the saved set so the client reconciles from server truth.
+        const setView = saved
+            ? {
+                exId: saved.exId,
+                setNo: saved.setNo,
+                weightKg: saved.weightKg ?? null,
+                reps: saved.reps ?? null,
+                durationSec: saved.durationSec ?? null,
+                completed: !!saved.completed
+            }
+            : null;
+
+        res.json({ success: true, set: setView, session: sessionView(ps, day, progress), progress });
     } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to update exercise" });
-    }
-});
-
-// Re-sync an existing session with the current workout definition
-// (after the user edits a workout mid-day). Preserves done state for
-// exercises that still exist; removes ones that were deleted.
-router.post("/sessions/:date/refresh", auth, async (req, res) => {
-    try {
-        const date = req.params.date;
-        if (!isValidDateKey(date)) return res.status(400).json({ success: false, message: "Invalid date" });
-
-        const session = await WorkoutSession.findOne({ userId: req.userId, date });
-        if (!session) return res.status(404).json({ success: false, message: "No workout started for this date" });
-
-        const { workout } = await scheduledWorkout(req.userId, date);
-        if (!workout) return res.status(400).json({ success: false, message: "Rest day — nothing to refresh", code: "REST_DAY" });
-
-        const prev = new Map(session.exercises.map((x) => [x.key, x]));
-        session.workoutId = workout._id;
-        session.workoutName = workout.name;
-        session.exercises = snapshotExercises(workout).map((x) => {
-            const before = prev.get(x.key);
-            if (before) { x.done = before.done; x.doneAt = before.doneAt; }
-            return x;
-        });
-        const p = progressOf(session);
-        session.completedAt = p.total > 0 && p.done === p.total ? new Date() : null;
-        await session.save();
-
-        res.json({ success: true, session: sessionView(session) });
-    } catch (e) {
-        res.status(500).json({ success: false, message: "Failed to refresh workout" });
+        res.status(500).json({ success: false, message: "Couldn't save that set" });
     }
 });
 
 // ============================================================
-// HISTORY
+// SESSION-LEVEL ALTERNATIVE CHOICE ("Plank OR Dead Bug" etc.)
+// ============================================================
+router.post("/sessions/:date/choice", auth, async (req, res) => {
+    try {
+        const r = await resolveDate(req, true);
+        if (r.error) return res.status(400).json({ success: false, message: r.error });
+        const date = r.date;
+
+        const dayNum = plan.planDayForDate(date);
+        const day = plan.getDay(dayNum);
+        if (day.rest) {
+            return res.status(400).json({ success: false, code: "REST_DAY", message: "Rest day — nothing to choose." });
+        }
+
+        const body = req.body || {};
+        const slotId = typeof body.slotId === "string" ? body.slotId : "";
+        const choiceId = typeof body.choiceId === "string" ? body.choiceId : "";
+        if (!plan.isValidChoice(day, slotId, choiceId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Only this day's two prescribed alternatives can be chosen"
+            });
+        }
+
+        await ensurePlanSession(req.userId, date, dayNum);
+        await PlanSession.updateOne(
+            { userId: req.userId, date },
+            { $set: { [`choices.${slotId}`]: choiceId } }
+        );
+        res.json(await buildDayPayload(req.userId, date));
+    } catch (e) {
+        res.status(500).json({ success: false, message: "Couldn't save that choice" });
+    }
+});
+
+// ============================================================
+// CARDIO LOG (Days 1/2/4 run-walk, Day 6 main endurance session)
+// ============================================================
+router.post("/sessions/:date/cardio", auth, async (req, res) => {
+    try {
+        const r = await resolveDate(req, true);
+        if (r.error) return res.status(400).json({ success: false, message: r.error });
+        const date = r.date;
+
+        const dayNum = plan.planDayForDate(date);
+        const day = plan.getDay(dayNum);
+        if (day.rest) {
+            return res.status(400).json({ success: false, code: "REST_DAY", message: "Rest day — no cardio to log." });
+        }
+        if (!day.cardio || !day.cardio.loggable) {
+            return res.status(400).json({ success: false, message: "No cardio is prescribed on this day." });
+        }
+
+        const body = req.body || {};
+        const fields = {};
+
+        const dist = parseNumber(body.distanceKm, { min: 0, max: 500, label: "distance (km)" });
+        if (dist.error) return res.status(400).json({ success: false, message: dist.error });
+        if (body.distanceKg !== undefined || dist.value !== undefined) fields["cardio.distanceKm"] = dist.value;
+
+        const dur = parseNumber(body.durationMin, { min: 0, max: 1440, label: "duration (minutes)" });
+        if (dur.error) return res.status(400).json({ success: false, message: dur.error });
+        if (body.durationMin !== undefined || dur.value !== undefined) fields["cardio.durationMin"] = dur.value;
+
+        if (body.notes !== undefined) {
+            if (typeof body.notes !== "string") return res.status(400).json({ success: false, message: "notes must be text" });
+            fields["cardio.notes"] = body.notes.slice(0, 500);
+        }
+        const done = parseBoolean(body.completed, "completed");
+        if (done.error) return res.status(400).json({ success: false, message: done.error });
+        if (done.value !== undefined) {
+            fields["cardio.completed"] = done.value;
+            fields["cardio.loggedAt"] = done.value ? new Date() : null;
+        }
+
+        await ensurePlanSession(req.userId, date, dayNum);
+        if (Object.keys(fields).length) {
+            await PlanSession.updateOne({ userId: req.userId, date }, { $set: fields });
+        }
+
+        const choices = await storedChoices(req.userId, date, day);
+        const progress = await refreshCompletion(req.userId, date, day, choices);
+        const ps = await PlanSession.findOne({ userId: req.userId, date });
+        res.json({ success: true, session: sessionView(ps, day, progress), progress });
+    } catch (e) {
+        res.status(500).json({ success: false, message: "Couldn't save that cardio log" });
+    }
+});
+
+// ============================================================
+// HISTORY — new fixed-plan sessions + untouched legacy sessions.
 // ============================================================
 router.get("/history", auth, async (req, res) => {
     try {
         const limit = Math.min(90, Math.max(1, Math.round(Number(req.query.limit) || 30)));
-        const sessions = await WorkoutSession.find({ userId: req.userId })
-            .sort({ date: -1 })
-            .limit(limit);
-        res.json({
-            success: true,
-            sessions: sessions.map((s) => {
-                const v = sessionView(s);
-                return {
-                    date: v.date,
-                    workoutName: v.workoutName,
-                    done: v.done,
-                    total: v.total,
-                    pct: v.pct,
-                    completed: v.completed,
-                    completedAt: v.completedAt,
-                    exercises: v.exercises
-                };
-            })
+        const [sessions, legacySessions] = await Promise.all([
+            PlanSession.find({ userId: req.userId }).sort({ date: -1 }).limit(limit),
+            WorkoutSession.find({ userId: req.userId }).sort({ date: -1 }).limit(limit)
+                .select("date workoutName exercises completedAt")
+                .lean()
+        ]);
+
+        const dates = sessions.map((s) => s.date);
+        const logs = dates.length
+            ? await SetLog.find({ userId: req.userId, date: { $in: dates }, completed: true }).select("date exId")
+            : [];
+
+        const fixedRows = sessions.map((s) => {
+            const day = plan.getDay(s.planDay);
+            const choices = plan.normalizeChoices(day, s.choices ? Object.fromEntries(s.choices) : {});
+            const total = plan.totalSets(day, choices);
+            const ids = new Set(plan.resolveExercises(day, choices).map((e) => e.id));
+            const done = logs.filter((l) => l.date === s.date && ids.has(l.exId)).length;
+            const cardio = s.cardio || {};
+            return {
+                legacy: false,
+                date: s.date,
+                planDay: s.planDay,
+                workoutName: plan.displayTitle(day),
+                restDay: day.rest,
+                done,
+                total,
+                pct: total ? Math.round((done / total) * 100) : (cardio.completed ? 100 : 0),
+                completed: s.completedAt ? true : false,
+                completedAt: s.completedAt || null,
+                cardio: (cardio.distanceKm != null || cardio.durationMin != null || cardio.completed)
+                    ? {
+                        distanceKm: cardio.distanceKm ?? null,
+                        durationMin: cardio.durationMin ?? null,
+                        completed: !!cardio.completed
+                    }
+                    : null
+            };
         });
+
+        const legacyRows = legacySessions.map((s) => legacySummary(s));
+        const merged = [...fixedRows, ...legacyRows]
+            .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+            .slice(0, limit);
+
+        res.json({ success: true, sessions: merged });
     } catch (e) {
         res.status(500).json({ success: false, message: "Failed to load history" });
+    }
+});
+
+// ============================================================
+// LEGACY READ-ONLY ENDPOINTS
+// The builder-era workouts stay in the database as history; this
+// endpoint only lists them (no create/edit/delete exists anymore).
+// ============================================================
+router.get("/workouts", auth, async (req, res) => {
+    try {
+        const workouts = await Workout.find({ userId: req.userId }).sort({ updatedAt: -1 });
+        res.json({ success: true, workouts });
+    } catch (e) {
+        res.status(500).json({ success: false, message: "Failed to load workouts" });
     }
 });
 
