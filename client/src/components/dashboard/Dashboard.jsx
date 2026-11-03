@@ -2,18 +2,90 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../../services/api";
 import { useStore } from "../../store/AppStore";
-import { ProgressRing, ProgressBar, PageSkeleton, EmptyState } from "../ui/Primitives";import { MiniBars } from "../charts/Charts";
+import { ProgressRing, ProgressBar, PageSkeleton, EmptyState } from "../ui/Primitives";
+import { MiniBars } from "../charts/Charts";
 import { formatShort, greeting } from "../../utils/format";
+import {
+    BASELINE_SLIDER_KEYS,
+    formatBaselineRating,
+    overallBaselineRating,
+    parseStoredSliderAnswer,
+    ratingProgressFraction,
+    scoreOf,
+    sliderRatingPercentage
+} from "../../utils/baseline";
+
+const BASELINE_CATEGORIES = [
+    { key: "body", label: "Body" },
+    { key: "discipline", label: "Discipline" },
+    { key: "learning", label: "Learning" },
+    { key: "productivity", label: "Productivity" },
+    { key: "goalDrive", label: "Goal Drive" }
+];
+
+function BaselineRatingWheel({ rating }) {
+    const isUnassessed = rating === null;
+    const circumference = 2 * Math.PI * 52;
+    const progress = isUnassessed ? 0 : ratingProgressFraction(rating);
+    const offset = circumference * (1 - progress);
+    const accessibleRating = isUnassessed
+        ? "Overall starting rating: not assessed"
+        : `Overall starting rating: ${formatBaselineRating(rating)} out of 10`;
+
+    return (
+        <div className="baseline-rating-wheel-wrap">
+            <svg
+                className="baseline-rating-wheel"
+                viewBox="0 0 120 120"
+                role="img"
+                aria-label={accessibleRating}
+            >
+                <circle className="baseline-rating-track" cx="60" cy="60" r="52" />
+                {!isUnassessed && (
+                    <circle
+                        className="baseline-rating-progress"
+                        cx="60"
+                        cy="60"
+                        r="52"
+                        strokeDasharray={circumference}
+                        strokeDashoffset={offset}
+                        transform="rotate(-90 60 60)"
+                    />
+                )}
+            </svg>
+            <div className="baseline-rating-wheel-center" aria-hidden="true">
+                {isUnassessed ? (
+                    <>
+                        <strong>—</strong>
+                        <span>NOT ASSESSED</span>
+                    </>
+                ) : (
+                    <>
+                        <strong>{formatBaselineRating(rating)}</strong>
+                        <span>OUT OF 10</span>
+                    </>
+                )}
+            </div>
+        </div>
+    );
+}
 
 export default function Dashboard() {
     const { user, dash, dashError, reloadDashboard, toast } = useStore();
     const [busyHabit, setBusyHabit] = useState(null);
     const [review, setReview] = useState(null);
     const [gymToday, setGymToday] = useState(null);
+    const [baseline, setBaseline] = useState(null);
+    const [baselineLoading, setBaselineLoading] = useState(true);
+    const [baselineError, setBaselineError] = useState("");
 
     useEffect(() => {
         api.get("/review/weekly").then((r) => setReview(r.data)).catch(() => {});
         api.get("/gym/today").then((r) => setGymToday(r.data)).catch(() => {});
+        api.get("/baseline")
+            .then((r) => setBaseline(r.data?.baseline || null))
+            .catch((e) => setBaselineError(e.response?.data?.message || "Starting baseline could not be loaded."))
+            .finally(() => setBaselineLoading(false));
     }, []);
 
     if (dashError) {
@@ -78,7 +150,9 @@ export default function Dashboard() {
                 </div>
                 <div className="dash-score-wrap">
                     <ProgressRing value={score} sub="ASCEND SCORE" />
-                    <p className="dash-score-reminder">Remember the disrespect</p>
+                    <p className="dash-score-reminder">
+                        {baseline?.answers?.goalDrive?.trim() || "Remember the disrespect"}
+                    </p>
                 </div>
             </div>
 
@@ -123,6 +197,61 @@ export default function Dashboard() {
                     <span className="stat-sub">{remaining > 0 ? `${remaining} actions remaining` : "All clear for today"}</span>
                 </div>
             </div>
+
+            <section className="section" aria-labelledby="dashboard-baseline-title">
+                <div className="section-title">
+                    <h2 id="dashboard-baseline-title">Starting baseline</h2>
+                </div>
+                <div className="card">
+                    {baselineLoading ? (
+                        <p className="hint">Loading your baseline…</p>
+                    ) : baselineError ? (
+                        <p className="form-error">{baselineError}</p>
+                    ) : baseline?.assessments ? (
+                        <>
+                            <div className="baseline-rating-summary">
+                                <BaselineRatingWheel rating={overallBaselineRating(baseline.answers)} />
+                                <p className="hint">Overall rating · average of Body, Discipline, Learning and Productivity</p>
+                            </div>
+                            <p className="hint" style={{ marginBottom: 16 }}>
+                                The first four ratings are self-reported estimates, not objective measurements. Goal Drive is saved as personal motivation and is not scored.
+                            </p>
+                            <div className="grid cols-2" style={{ gap: "14px 24px" }}>
+                                {BASELINE_CATEGORIES.map(({ key, label }) => {
+                                    const score = scoreOf(baseline.assessments, key);
+                                    const rating = BASELINE_SLIDER_KEYS.includes(key)
+                                        ? parseStoredSliderAnswer(baseline.answers?.[key])
+                                        : null;
+                                    const displayScore = rating === null ? score : sliderRatingPercentage(rating);
+                                    return (
+                                        <div key={key}>
+                                            <div className="row between" style={{ marginBottom: 6 }}>
+                                                <strong style={{ fontSize: 13.5 }}>{label}</strong>
+                                                <span className="mono-num">
+                                                    {key === "goalDrive"
+                                                        ? "Personal motivation"
+                                                        : rating !== null
+                                                            ? `${rating}/10`
+                                                            : score === null ? "—" : `${score}%`}
+                                                </span>
+                                            </div>
+                                            {key === "goalDrive" ? (
+                                                <p className="hint" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                                                    {baseline.answers?.goalDrive?.trim() || "No personal motivation added."}
+                                                </p>
+                                            ) : (
+                                                <ProgressBar value={displayScore ?? 0} thin />
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </>
+                    ) : (
+                        <p className="hint">No starting baseline has been saved yet.</p>
+                    )}
+                </div>
+            </section>
 
             {gymToday && !gymToday.restDay && gymToday.workout && (
                 <div className="section">
