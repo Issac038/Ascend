@@ -23,7 +23,7 @@ const ProgressSnapshot = require("../models/ProgressSnapshot");
 const UserAchievement = require("../models/Achievement");
 const Notification = require("../models/Notification");
 const { Meal, MealPrior, MealAnswerMemory } = require("../models/Meal");
-const { Workout, WeeklyPlan, WorkoutSession } = require("../models/Gym");
+const { Workout, WeeklyPlan, WorkoutSession, PlanSession, SetLog } = require("../models/Gym");
 const Baseline = require("../models/Baseline");
 
 const router = express.Router();
@@ -551,7 +551,7 @@ router.patch("/settings", auth, async (req, res) => {
 // ============================================================
 router.get("/export", auth, requireJournalUnlock, async (req, res) => {
     try {
-        const [user, settings, areas, habits, completions, tasks, goals, journals, snapshots, achievements, meals, workouts, gymPlan, gymSessions, baseline] = await Promise.all([
+        const [user, settings, areas, habits, completions, tasks, goals, journals, snapshots, achievements, meals, workouts, gymPlan, gymSessions, planSessions, setLogs, baseline] = await Promise.all([
             User.findById(req.userId).select("-password -__v"),
             Settings.find({ userId: req.userId }).select("-__v"),
             Area.find({ userId: req.userId }).select("-__v"),
@@ -566,6 +566,8 @@ router.get("/export", auth, requireJournalUnlock, async (req, res) => {
             Workout.find({ userId: req.userId }).select("-__v"),
             WeeklyPlan.find({ userId: req.userId }).select("-__v"),
             WorkoutSession.find({ userId: req.userId }).select("-__v").limit(2000),
+            PlanSession.find({ userId: req.userId }).select("-__v").limit(2000),
+            SetLog.find({ userId: req.userId }).select("-__v").limit(5000),
             Baseline.find({ userId: req.userId }).select("-__v")
         ]);
 
@@ -588,6 +590,8 @@ router.get("/export", auth, requireJournalUnlock, async (req, res) => {
             workouts,
             gymPlan,
             gymSessions,
+            planSessions,
+            setLogs,
             baseline
         });
     } catch (e) {
@@ -616,6 +620,8 @@ router.post("/reset", auth, async (req, res) => {
             Workout.deleteMany({ userId: req.userId }),
             WeeklyPlan.deleteMany({ userId: req.userId }),
             WorkoutSession.deleteMany({ userId: req.userId }),
+            PlanSession.deleteMany({ userId: req.userId }),
+            SetLog.deleteMany({ userId: req.userId }),
             Baseline.deleteMany({ userId: req.userId })
         ]);
         await User.updateOne({ _id: req.userId }, { $set: { xp: 0, onboarded: false } });
@@ -650,6 +656,8 @@ router.post("/delete-account", auth, async (req, res) => {
             Workout.deleteMany({ userId: uid }),
             WeeklyPlan.deleteMany({ userId: uid }),
             WorkoutSession.deleteMany({ userId: uid }),
+            PlanSession.deleteMany({ userId: uid }),
+            SetLog.deleteMany({ userId: uid }),
             Baseline.deleteMany({ userId: uid })
         ]);
         await User.findByIdAndDelete(uid);

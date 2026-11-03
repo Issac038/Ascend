@@ -6,14 +6,16 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "test": "node --test test/",
     "test:baseline": "node --test test/baseline*.test.js",
-    "test": "node test/scoring.test.js && node test/nutrition-engine.test.js && node test/run-tests.js && node test/nutrition-api.test.js && node test/nutrition-library.test.js && node test/gym.test.js && node test/v11.test.js",
-    "test:scoring": "node test/scoring.test.js",
-    "test:nutrition": "node test/nutrition-engine.test.js",
-    "test:nutrition-api": "node test/nutrition-api.test.js",
-    "test:nutrition-library": "node test/nutrition-library.test.js",
-    "test:api": "node test/run-tests.js",
-    "test:v11": "node test/v11.test.js"
+    "test:scoring": "node --test test/scoring.test.js",
+    "test:plan": "node --test test/fixedplan.test.js",
+    "test:gym": "node --test test/gym.test.js",
+    "test:nutrition": "node --test test/nutrition-engine.test.js",
+    "test:nutrition-api": "node --test test/nutrition-api.test.js",
+    "test:nutrition-library": "node --test test/nutrition-library.test.js",
+    "test:api": "node --test test/run-tests.js",
+    "test:v11": "node --test test/v11.test.js"
   },
   "keywords": [],
   "author": "",

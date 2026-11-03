@@ -25,4 +25,10 @@ export default defineConfig([
       'react-refresh/only-export-components': 'off',
     },
   },
+  {
+    // vite.config.js is executed by Vite in Node, not the browser, so Node
+    // globals like `process` are legitimately defined there.
+    files: ['vite.config.js'],
+    languageOptions: { globals: { ...globals.browser, ...globals.node } },
+  },
 ])
