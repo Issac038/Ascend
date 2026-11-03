@@ -67,6 +67,11 @@ npm test
    are ignored), validation, and safe provider-failure states, on its own
    scratch DB (port 4591).
 
+Run the baseline validation, scoring, schema, and route tests independently
+with `cd server && npm run test:baseline`. The route tests exercise the
+authenticated Express route with in-memory persistence; they do not require a
+live MongoDB connection.
+
 ### Test database configuration (never production)
 
 The API suite refuses to run without an explicit test database:
@@ -114,6 +119,12 @@ Required environment variables (see `server/.env.example`):
 | `SERVE_STATIC` | Optional. Set to `false` to force API-only mode even when `client/dist` exists |
 | `FATSECRET_CLIENT_ID` / `FATSECRET_CLIENT_SECRET` | FatSecret Platform API credentials — power the Nutrition food search. Server-side only; never exposed to the frontend |
 | `NUTRITION_PHOTO_ENABLED` / `NUTRITION_BARCODE_ENABLED` | Optional. Set to `true` ONLY if your FatSecret key is **Premier** (Image Recognition & Barcode Scanning are Premier-exclusive) or a vision provider is wired into `server/services/imageRecognitionService.js`. Leave unset for honest "unavailable" states |
+
+#### Starting baseline
+
+Body, Discipline, Learning and Productivity are scored locally from integer
+ratings of 1–10. Goal Drive is saved as plain-text motivation and is not
+scored. The baseline flow requires no external AI credentials or requests.
 
 ## Nutrition feature
 
