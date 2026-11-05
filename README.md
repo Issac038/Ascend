@@ -1,103 +1,100 @@
-# ASCEND — Become better. Every day.
 
-A personal command center for self-improvement: plan → act → track → reflect → improve → ascend.
+# ASCEND
 
-ASCEND is a full-stack application (React + Vite frontend, Express + MongoDB backend) for goals, habits, tasks, journaling, analytics, achievements and progression — designed around a strict black/grey/white design system.
+ASCEND is a project I'm building to keep my day-to-day goals and progress in one place. I wanted something where I could manage habits, plan tasks, track nutrition, write journal entries and see how I'm doing without jumping between different apps.
 
-## Project layout
+It's built using React, Vite, Node.js, Express and MongoDB. The UI uses a black, grey and white colour scheme.
 
-```
+## Live Demo
+
+You can check out the deployed version of ASCEND here:
+
+[https://ascend-41lf.onrender.com/dashboard](https://ascend-41lf.onrender.com/dashboard)
+
+## Project Structure
+
+```text
 server/          Express API (Node.js, CommonJS)
   routes/        auth.js · data.js · insights.js · nutrition.js
   models/        Mongoose schemas (User, Habit, Goal, Task, Meal, JournalEntry, …)
   services/      FatSecret nutrition provider + image-recognition abstraction
   utils/         scoring engine, XP/levels, achievements, goal progress, date helpers, mailer
-  test/          self-contained API test suite
+  test/          API test suite
 client/          React 19 + Vite frontend (ESM)
   src/components page modules (dashboard, today, habits, goals, journal, …)
   src/store      global app store (auth, dashboard cache, settings)
-.freebuff/       preview/run tooling
 ```
 
-## Development setup
+## Running the Project Locally
 
-**Prerequisites:** Node.js 20+, a MongoDB database (local or hosted — e.g. MongoDB Atlas).
+You'll need Node.js 20 or later and a MongoDB database. A local database works, or you can use MongoDB Atlas.
+
+To get the app running, start the backend first and then the frontend in a separate terminal.
 
 ```bash
-# 1. Backend
+# Backend
 cd server
 npm install
-cp .env.example .env          # then fill in MONGO_URI + JWT_SECRET (see .env.example)
-npm run dev                   # API on http://localhost:5000
+cp .env.example .env
+npm run dev
 
-# 2. Frontend (new terminal)
+# Frontend (open a second terminal)
 cd client
 npm install
-npm run dev                   # http://localhost:5173 (proxies /api -> :5000)
+npm run dev
 ```
 
-Optional (development only): `POST /api/data/seed-demo` generates 45 days of
-realistic demo data for the logged-in user. This endpoint does not exist in
-production (`NODE_ENV=production`).
+The backend runs on `http://localhost:5000` and the frontend on `http://localhost:5173`. The frontend proxies API requests to the backend.
 
-## Testing
+If you want some sample data while developing, there's also a `POST /api/data/seed-demo` endpoint. It adds 45 days of demo data to the account you're logged into. It's only available in development and is disabled in production.
+
+## Tests
 
 ```bash
 cd server
 npm test
 ```
 
-`npm test` runs four suites:
+From the `server` folder, run `npm test`. It runs four test suites:
 
-1. **Scoring unit tests** (`test/scoring.test.js`) — pure functions, **no
-   database needed**. Covers the day-score matrix (boolean/numeric habits,
-   the `habitsDone <= habitsScheduled` invariant, weekly-target evaluation,
-   XP tiers, level boundaries).
-2. **Nutrition service tests** (`test/nutrition.test.js`) — FatSecret OAuth2
-   + search/details against a **mocked HTTP layer** (no network, no live API).
-   Covers token caching, request shapes, response normalization, error
-   mapping (429 → RATE_LIMITED, auth failure → PROVIDER_AUTH), and the
-   honest Premier-required states for photo/barcode.
-3. **API test suite** (`test/run-tests.js`) — spawns a throwaway backend on
-   port 4590 against a **dedicated test database**, drives the real HTTP API
-   (auth, ownership isolation, XP idempotency, recurrence dedup, validation,
-   destructive-op gates), then drops the scratch DB.
-4. **Nutrition API tests** (`test/nutrition-api.test.js`) — meal CRUD,
-   ownership isolation, server-side totals recalculation (client-sent totals
-   are ignored), validation, and safe provider-failure states, on its own
-   scratch DB (port 4591).
+1. **Scoring unit tests** (`test/scoring.test.js`) — pure functions, no database needed. Covers the day-score matrix (boolean/numeric habits, the `habitsDone <= habitsScheduled` invariant, weekly-target evaluation, XP tiers and level boundaries).
 
-Run the baseline validation, scoring, schema, and route tests independently
-with `cd server && npm run test:baseline`. The route tests exercise the
-authenticated Express route with in-memory persistence; they do not require a
-live MongoDB connection.
+2. **Nutrition service tests** (`test/nutrition.test.js`) — FatSecret OAuth2 search/details against a mocked HTTP layer. No network or live API is needed. Covers token caching, request shapes, response normalization, error mapping and the expected Premier-only states for photo/barcode.
 
-### Test database configuration (never production)
+3. **API test suite** (`test/run-tests.js`) — starts a temporary backend on port 4590 against a dedicated test database. Tests authentication, ownership isolation, XP idempotency, recurrence deduplication, validation and destructive-operation checks before dropping the test database.
 
-The API suite refuses to run without an explicit test database:
+4. **Nutrition API tests** (`test/nutrition-api.test.js`) — tests meal CRUD, ownership isolation, server-side total calculations, validation and provider-failure states using its own test database on port 4591.
+
+There's also `npm run test:baseline` if you want to run the baseline validation, scoring, schema and route tests separately. The route tests use in-memory persistence, so they don't need a live MongoDB connection.
+
+### Test Database
+
+The API tests use a separate database so they don't interfere with your normal data. You need to configure a test database before running them; the tests won't start without one.
 
 ```bash
-# Option A — dedicated test DB (recommended):
+# Option A — dedicated test DB (recommended)
 TEST_MONGO_URI=mongodb://localhost:27017/ascend_test npm test
 
-# Option B — reuse a dev/qa cluster; tests swap the database NAME to
-# ascend_test_<timestamp> so the database in MONGO_URI is never touched:
+# Option B — reuse a dev/qa cluster; tests create a separate
+# ascend_test_<timestamp> database instead of touching your dev database
 MONGO_URI=mongodb+srv://devuser:***@dev-cluster.example.net/devdb npm test
 ```
 
-Guard rails: URIs whose database is `admin`/`local`/`config`/`production`/
-`prod` are refused outright, and the resolved test URI is additionally
-checked against a production-name pattern before anything starts.
+There are a few safety checks too: database names like `admin`, `local`, `config`, `production` and `prod` are blocked. The final test URI is checked before the tests start.
 
-CI note: the suite needs a reachable MongoDB. Local dev can use the Docker
-image (`docker run -d -p 27017:27017 mongo:7`); hosted CI can use a service
-container exposing `MONGO_URI`/`TEST_MONGO_URI`.
+The tests need to be able to connect to MongoDB. If you're running them locally, you can start MongoDB with Docker:
+
+```bash
+docker run -d -p 27017:27017 mongo:7
+```
+
+For CI, provide a MongoDB service and set `MONGO_URI` or `TEST_MONGO_URI`.
 
 ## Deployment
 
-### 1. Backend
+### Backend
 
-Build/run from source — no build step needed for the API:
+The backend can run directly with Node.js, so there's no separate build command. For a production deployment, install only the production dependencies and start it like this:
 
 ```bash
 cd server
@@ -108,143 +105,118 @@ NODE_ENV=production npm start
 Required environment variables (see `server/.env.example`):
 
 | Variable | Purpose |
-| --- | --- |
-| `MONGO_URI` | MongoDB connection string (use a hosted cluster + strong credentials) |
-| `JWT_SECRET` | Long random string signing session JWTs (≥ 48 random bytes) |
-| `CLIENT_URL` | Comma-separated CORS allowlist of frontend origins, e.g. `https://ascend.example.com` |
-| `NODE_ENV` | `production` — enables Secure/SameSite=None cookies, strict CORS, safe error messages |
-| `PORT` | Port the API listens on |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `EMAIL_FROM` | Optional. Password-reset emails. **Without SMTP, password reset is disabled** (codes are logged server-side only, never returned to clients) |
-| `INVITE_CODE` | Optional. If set, registration is invite-only — the signup form requires this code. Recommended for private personal deployments |
-| `SERVE_STATIC` | Optional. Set to `false` to force API-only mode even when `client/dist` exists |
-| `FATSECRET_CLIENT_ID` / `FATSECRET_CLIENT_SECRET` | FatSecret Platform API credentials — power the Nutrition food search. Server-side only; never exposed to the frontend |
-| `NUTRITION_PHOTO_ENABLED` / `NUTRITION_BARCODE_ENABLED` | Optional. Set to `true` ONLY if your FatSecret key is **Premier** (Image Recognition & Barcode Scanning are Premier-exclusive) or a vision provider is wired into `server/services/imageRecognitionService.js`. Leave unset for honest "unavailable" states |
+|---|---|
+| `MONGO_URI` | MongoDB connection string. Use a hosted cluster with strong credentials. |
+| `JWT_SECRET` | Long random string used to sign session JWTs (at least 48 random bytes). |
+| `CLIENT_URL` | Comma-separated list of allowed frontend origins for CORS. |
+| `NODE_ENV` | Set to `production` to enable production cookie settings, strict CORS and safer error messages. |
+| `PORT` | Port the API listens on. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `EMAIL_FROM` | Optional email settings for password resets. Without SMTP, password reset is disabled. |
+| `INVITE_CODE` | Optional. If set, users need the invite code to register. |
+| `SERVE_STATIC` | Optional. Set to `false` to run the API without serving the frontend build. |
+| `FATSECRET_CLIENT_ID` / `FATSECRET_CLIENT_SECRET` | FatSecret API credentials used for food search. These stay on the backend. |
+| `NUTRITION_PHOTO_ENABLED` / `NUTRITION_BARCODE_ENABLED` | Optional. Enable only if you have the required FatSecret Premier access or a vision provider configured. |
 
-#### Starting baseline
+#### Starting Baseline
 
-Body, Discipline, Learning and Productivity are scored locally from integer
-ratings of 1–10. Goal Drive is saved as plain-text motivation and is not
-scored. The baseline flow requires no external AI credentials or requests.
+The baseline section has five areas: Body, Discipline, Learning, Productivity and Goal Drive. Body, Discipline, Learning and Productivity are rated from 1 to 10, and the app calculates their scores locally. Goal Drive is just saved as text, so it doesn't affect the score. No external AI service or API key is needed for this.
 
-## Nutrition feature
+## Nutrition Tracking
 
-Powered by the [FatSecret Platform API](https://platform.fatsecret.com/docs) (server-side only).
+The nutrition section uses the [FatSecret Platform API](https://platform.fatsecret.com/docs) to search for food and get nutrition details. The API credentials are kept on the backend, not in the frontend.
 
-**To configure:** register at platform.fatsecret.com, create an app, copy the Client ID + Secret into `FATSECRET_CLIENT_ID` / `FATSECRET_CLIENT_SECRET`, and (for production) allowlist your server's outbound IP in the FatSecret app settings — OAuth 2.0 tokens can only be requested from IPs you register there.
+To connect FatSecret, create an app on its platform and add the Client ID and Secret to `FATSECRET_CLIENT_ID` and `FATSECRET_CLIENT_SECRET`. If you're deploying the backend, you'll also need to add its outbound IP to the FatSecret allowlist. Token requests are only accepted from registered IPs.
 
 | Capability | Status with a free/basic key | Notes |
-| --- | --- | --- |
-| Food search (`foods.search`) | ✅ IMPLEMENTED | Covers generic, brand, restaurant and packaged foods — Indian, continental, international |
-| Food details + servings (`food.get.v4`) | ✅ IMPLEMENTED | Every serving listed; quantity + grams selection; live nutrition preview |
-| Meal CRUD + daily totals | ✅ IMPLEMENTED | Totals recalculated server-side; date navigation; per-meal editing |
-| Calorie target | ✅ IMPLEMENTED | Optional, user-defined (Settings → Nutrition). Not auto-prescribed, not medical advice |
-| Photo meal scanner | ⚠️ SUPPORTED BUT REQUIRES PROVIDER ACCESS | FatSecret Image Recognition is **Premier-exclusive**. UI shows an honest unavailable state; a provider plugs into `services/imageRecognitionService.js` without UI changes |
-| Barcode lookup | ⚠️ SUPPORTED BUT REQUIRES PROVIDER ACCESS | FatSecret Barcode Scanning is **Premier-exclusive**. Manual nutrition-facts entry is the always-available fallback |
+|---|---|---|
+| Food search (`foods.search`) | Available | Covers generic, brand, restaurant and packaged foods, including Indian and international options. |
+| Food details + servings (`food.get.v4`) | Available | Shows available servings, quantity and grams selection, and a nutrition preview. |
+| Meal CRUD + daily totals | Available | Totals are recalculated on the server. Includes date navigation and meal editing. |
+| Calorie target | Available | Optional and user-defined under Settings → Nutrition. |
+| Photo meal scanner | Needs provider access | FatSecret Image Recognition is Premier-exclusive. |
+| Barcode lookup | Needs provider access | FatSecret Barcode Scanning is Premier-exclusive. Manual nutrition-facts entry is available as a fallback. |
 
-Note on data retention: FatSecret's terms allow caching food **IDs** indefinitely but other data at most 24 h — ASCEND therefore fetches nutrient data live at meal-selection time and stores only what you log in your own meal records.
+**A note about food data:** FatSecret allows food IDs to be stored, but other food information can only be cached for up to 24 hours. Because of that, ASCEND fetches the nutrition details when you select a food and saves the meal details you log.
 
-Security behavior driven by `NODE_ENV`:
+Some security settings change depending on whether `NODE_ENV` is set to development or production:
 
-- Cookies: `httpOnly`, `Secure`, `SameSite=None` in production (works for
-  split-domain deployments; use `SameSite=Lax` if you serve the frontend from
-  the same domain and prefer it).
-- CORS: explicit allowlist from `CLIENT_URL` — no wildcard with credentials.
-- Rate limiting: strict limits on login/register/forgot/reset, general limit
-  on `/api`.
-- Security headers via Helmet; CSP enabled in production.
-- Dev-only demo-data endpoint is not registered in production.
+- Cookies: `httpOnly`, `Secure`, `SameSite=None` in production.
+- CORS: Uses an explicit allowlist from `CLIENT_URL`.
+- Rate limiting: Applied to login, registration, password reset and general API requests.
+- Security headers: Helmet and Content Security Policy are enabled in production.
+- The demo-data endpoint is not registered in production.
 
-### 2. Frontend
+### Frontend
 
 ```bash
 cd client
 npm ci
-VITE_API_URL=https://api.example.com/api npm run build   # or set it in client/.env.production
+VITE_API_URL=https://api.example.com/api npm run build
 ```
 
-- Deploy the `client/dist` folder to any static host / CDN.
-- `VITE_API_URL` **must** point at the real API origin — there is no hardcoded
-  localhost fallback in the bundle. (If you host the frontend on the same
-  origin as the API behind one reverse proxy, you may leave `VITE_API_URL`
-  empty so the client calls the relative `/api` path.)
-- Everything prefixed `VITE_` is public; never put secrets in client env files.
+- Deploy the `client/dist` folder to a static host or CDN.
+- `VITE_API_URL` must point to the actual API URL. There is no hardcoded localhost fallback in the production build.
+- If the frontend and backend share the same domain, `VITE_API_URL` can be left empty and the client can use the relative `/api` path.
+- Variables starting with `VITE_` are exposed to the frontend, so don't put secrets in them.
 
-### 3. SPA fallback (client-side routing)
+### Client-Side Routing
 
-ASCEND uses React Router with `BrowserRouter`, so the static host must serve
-`index.html` for every non-asset route (`/dashboard`, `/analytics`, …).
-Configuration for the common options is included:
+ASCEND uses React Router's `BrowserRouter`. This means the hosting provider needs to send `index.html` when a user opens or refreshes a page like `/dashboard` or `/analytics`. Otherwise, those routes can return a 404.
 
-- **Netlify / Cloudflare Pages / others reading `_redirects`:**
-  `client/public/_redirects` is copied into `dist/` by the build —
-  `/*  /index.html  200`.
-- **Vercel:** `client/vercel.json` rewrites all non-asset paths to
-  `/index.html`.
-- **nginx:** `try_files $uri $uri/ /index.html;` inside your site block.
-- **Express serving the built frontend (single-origin — built in):** the backend
-  automatically serves `client/dist` when the folder exists, with an SPA
-  fallback and correct cache/MIME headers (`manifest.webmanifest` gets the
-  right content type; `sw.js` is never cached). One process, one origin,
-  first-party cookies — the simplest private deployment. Set `SERVE_STATIC=false`
-  to disable.
+The project already includes configuration for these common hosts:
 
-Refreshing `https://example.com/dashboard` must never 404.
+- **Netlify / Cloudflare Pages:** Uses `client/public/_redirects`.
+- **Vercel:** Uses `client/vercel.json`.
+- **nginx:** Use `try_files $uri $uri/ /index.html;` inside your site configuration.
+- **Express:** The backend can serve the built frontend from `client/dist`, including the SPA fallback.
 
-### 3. Reverse proxy notes
+Once deployed, try opening and refreshing a route like `https://example.com/dashboard` directly. It should take you back into the app, not show a 404 page.
 
-- Terminate TLS at the proxy; forward `X-Forwarded-For` (the backend sets
-  `trust proxy = 1` so rate limiting sees real client IPs).
-- If the frontend and API are on different subdomains, CORS allowlist +
-  `SameSite=None; Secure` cookies are required (already the production
-  defaults).
+### Reverse Proxy
 
-## iPhone / PWA
+- Terminate TLS at the proxy and forward `X-Forwarded-For`.
+- If the frontend and API are on different subdomains, configure the CORS allowlist and use `SameSite=None; Secure` cookies.
 
-Ascend is an installable PWA tuned for iPhone (Dynamic Island / safe areas,
-bottom-sheet modals, 44px touch targets, no iOS input zoom):
+## Using ASCEND on an iPhone
 
-1. Build the frontend (`npm run build` in `client/`) — the service worker and
-   `manifest.webmanifest` are generated automatically (`vite-plugin-pwa`).
-2. Serve it over **HTTPS** (required for install + service worker).
-3. On iPhone Safari: **Share → Add to Home Screen** → "Ascend". Launching from
-   the icon runs standalone (no browser UI) with safe-area-aware layout.
+ASCEND can be installed on an iPhone too, like a normal app, using its PWA support. I've included safe-area spacing, bottom-sheet modals and larger touch targets to make the mobile layout easier to use.
 
-Icon set lives in `client/public/icons/` + `client/public/apple-touch-icon.png`,
-regenerated via `node scripts/generate-icons.mjs` (no dependencies needed).
+1. Build the frontend using `npm run build` inside `client/`.
+2. Serve it over HTTPS. This is required for PWA installation and service workers.
+3. Open the site in iPhone Safari, tap **Share → Add to Home Screen**, and choose "Ascend".
 
-Offline behavior: the app shell (HTML/JS/CSS/icons) is precached; **API
-responses are never cached** (`/api/` is excluded from the service worker), so
-private data always comes fresh from the network. Offline, the installed app
-opens to its shell instead of a blank page.
+The app icons are in `client/public/icons/` and `client/public/apple-touch-icon.png`. They can be regenerated using:
 
-## Security notes
+```bash
+node scripts/generate-icons.mjs
+```
 
-- Passwords: bcrypt (cost 12). Password reset: 6-digit code generated with
-  `crypto.randomInt`, stored as SHA-256 hash, single-use, 15-minute expiry,
-  delivered by email only.
-- All user-scoped queries include `userId` — cross-user access is impossible
-  at the route level (covered by tests).
-- Reset/confirm endpoints require explicit confirmation payloads.
-- `.env` files are git-ignored; `.env.example` documents variable names only.
-  **If any real secret was ever committed or shared, rotate it** (JWT_SECRET,
-  MongoDB credentials, SMTP credentials).
+The service worker saves the app files (HTML, JavaScript, CSS and icons) so the app shell can still open when you're offline. It doesn't cache `/api/` responses, though, so anything that needs your account data still needs an internet connection.
+
+## Security
+
+- Passwords are hashed using bcrypt (cost 12).
+- Password reset codes are generated using `crypto.randomInt`, stored as SHA-256 hashes and expire after 15 minutes. They can only be used once.
+- All user-specific database queries include `userId`.
+- Reset and confirmation endpoints require explicit confirmation.
+- `.env` files are git-ignored. `.env.example` only contains variable names and example values.
+- If a real secret was ever committed or shared, rotate it. This includes `JWT_SECRET`, MongoDB credentials and SMTP credentials.
 
 ## Scripts
 
 | Location | Command | Purpose |
-| --- | --- | --- |
-| `server/` | `npm run dev` | Start API (development) |
-| `server/` | `npm start` | Start API (production) |
-| `server/` | `npm test` | Scoring unit tests + API suite (dedicated test DB, port 4590) |
-| `server/` | `npm run test:scoring` | Scoring unit tests only (no DB required) |
-| `server/` | `npm run test:api` | API suite only (requires `TEST_MONGO_URI` or dev `MONGO_URI`) |
-| `client/` | `npm run dev` | Vite dev server with /api proxy |
-| `client/` | `npm run build` | Production frontend build |
-| `client/` | `npm run lint` | ESLint |
+|---|---|---|
+| `server/` | `npm run dev` | Start API in development. |
+| `server/` | `npm start` | Start API in production. |
+| `server/` | `npm test` | Run scoring tests and API tests. |
+| `server/` | `npm run test:scoring` | Run scoring unit tests only. |
+| `server/` | `npm run test:api` | Run API tests only. |
+| `client/` | `npm run dev` | Start the Vite development server. |
+| `client/` | `npm run build` | Build the frontend for production. |
+| `client/` | `npm run lint` | Run ESLint. |
 
+## Demo Login
 
-# Test Account 
+Email: sam123@example.com
 
-Email - sam123@example.com
-
-Password - password123
+Password: `password123`
